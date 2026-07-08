@@ -1,0 +1,26 @@
+{
+  "origin": "keyserver.geomys.org",
+  "vkey": "keyserver.geomys.org+16b31509+ARLJ+pmTj78HzTeBj04V+LVfB+GFAQyrg54CRIju7Nn8",
+  "steps": [
+    {
+      "file": "00-first.req",
+      "status": 200
+    },
+    {
+      "file": "01-resubmit.req",
+      "status": 200
+    },
+    {
+      "file": "02-badproof.req",
+      "status": 422
+    },
+    {
+      "file": "03-grow.req",
+      "status": 200
+    },
+    {
+      "file": "99-stale.req",
+      "status": 409
+    }
+  ]
+}
