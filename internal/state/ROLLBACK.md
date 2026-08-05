@@ -10,15 +10,15 @@ witness cosign a checkpoint inconsistent with one it has already cosigned.
 ## Primitives
 
 - **microSD state blob**: the witness's per-log checkpoint state
-  (`origin → cosigned note`), serialized, **encrypted and authenticated**
+  (`origin → cosigned note`), serialized, encrypted and authenticated
   under a device-bound key `K_state = KDF(HUK, "vitrum-state-v1")`, written to
   two alternating A/B slots. The authenticated blob embeds a monotonic
-  **generation** counter `g`. The adversary can roll the microSD back to an
+  generation counter `g`. The adversary can roll the microSD back to an
   earlier `g`, or corrupt it, but cannot forge a blob at a chosen `g`
   (no `K_state`).
 - **RPMB anchor**: a single eMMC RPMB sector holding the latest generation
   `g`, written with an authenticated RPMB write. Each such write advances the
-  eMMC's hardware-monotonic **write counter** (`internal/rpmb`). The RPMB
+  eMMC's hardware-monotonic write counter (`internal/rpmb`). The RPMB
   write counter cannot be decremented by any means available to the adversary
   (it is enforced in the eMMC controller and keyed by `K_rpmb = KDF(HUK,
   "vitrum-rpmb-v1")`, which never leaves the device). This is the anchor the
@@ -35,9 +35,9 @@ vector and any firmware derives the same keys; such boots are marked DEV
 > both (1) the blob at generation `g` is durably on the microSD, and (2) the
 > RPMB anchor reads `g`.
 
-Equivalently: **at rest, `g_rpmb` is the highest generation the witness has
+Equivalently: at rest, `g_rpmb` is the highest generation the witness has
 ever committed. A blob whose generation is *below* `g_rpmb` is stale (rolled
-back) and must be refused.**
+back) and must be refused.
 
 ## Update sequence (state machine)
 
@@ -54,7 +54,7 @@ S2  rpmb-anchored - authenticated RPMB write of (n+1) done; RPMB counter and
 S3  released   - cosignature returned to the client.
 ```
 
-Order is fixed: **S1 before S2 before S3.** The cosignature (S3) never leaves
+Order is fixed: S1 before S2 before S3. The cosignature (S3) never leaves
 the device before S2. A crash is a power loss between any two steps.
 
 ## Crash matrix
@@ -72,24 +72,23 @@ generation of the newest *valid* (decrypts + authenticates) microSD slot.
 ### Soft failures (I/O error, firmware keeps running)
 
 The crash matrix above covers power loss between steps. A commit can also fail
-*softly*: an S1 slot write or S2 anchor write returns an error while the
+softly: an S1 slot write or S2 anchor write returns an error while the
 firmware keeps running. Retrying the commit on a later submission would be
 unsound: the failed attempt's generation may already have a blob (or a torn
 one) on the medium, and a retry (possibly with different content) would Seal
-a **second** blob under the **same** generation. That both breaks the
+a second blob under the same generation. That both breaks the
 write-once invariant the counter-only anchor depends on (two authentic blobs
 would bear one generation, so the anchor could no longer pin the committed
 content) and reuses the generation-derived GCM nonce (classic nonce-reuse:
 plaintext XOR leak plus GHASH subkey recovery, i.e. blob forgery).
 
-So a soft failure at or after the point where a write was issued **halts the
-store immediately** (`RollbackStore.Put`): the generation is treated as
-burned, no cosignature is released, and an operator reboot resolves the state
-through the normal boot decision: a failed S1 lands in the "before S1" or
-"between S1 and S2" row, a failed S2 in "between S1 and S2" (benign
-off-by-one). Failures *before* anything touches the medium (key validation,
-oversize state) do not halt: the generation was never used and the submitter
-gets an error.
+So a soft failure at or after the point where a write was issued halts the
+store immediately: the generation is treated as burned, no cosignature is 
+released, and an operator reboot resolves the state through the normal boot 
+decision: a failed S1 lands in the "before S1" or "between S1 and S2" row, a 
+failed S2 in "between S1 and S2" (benign off-by-one). Failures before anything
+touches the medium (key validation, oversize state) do not halt: the generation
+was never used and the submitter gets an error.
 
 | Soft failure | On-disk result | Response | After reboot |
 |---|---|---|---|
@@ -106,7 +105,7 @@ gets an error.
 | forge a blob at a chosen high `g` | fails authentication | dropped as invalid; falls into the "no valid blob" row. |
 | roll RPMB back | impossible | hardware-enforced; `K_rpmb` never leaves the device. |
 
-**Deliberate deviation from prior art:** armored-witness performs an
+Deliberate deviation from prior art: armored-witness performs an
 authenticated dummy RPMB write at every boot (its CVE-2020-13799 mitigation,
 invalidating any adversary-held write request frame). vitrum skips it
 (`writeDummy=false` at `rpmb.Init`): every anchor write already verifies the
@@ -116,12 +115,12 @@ write counter, pushing the system toward the halt rows above (anchor ahead),
 never toward a split view. Skipping the dummy write also lets the firmware
 probe unprogrammed units without an authenticated operation.
 
-### Off-by-one is *only* benign upward
+### Off-by-one is only benign upward
 
 `g_blob == g_rpmb + 1` is the single tolerated mismatch (interrupted commit).
-`g_blob == g_rpmb + k` for `k >= 2` is **not** benign: it means more than one
-un-anchored commit, which the sequence never produces; treat as tamper and
-refuse. Any `g_blob < g_rpmb` is rollback and is refused.
+`g_blob == g_rpmb + k` for `k >= 2` is not benign: it means more than one
+un-anchored commit, which the sequence never produces. We treat this as 
+tampering and refuse. Any `g_blob < g_rpmb` is rollback and is refused.
 
 ## Boot decision (pseudocode)
 
@@ -138,14 +137,9 @@ case g_blob >  g_rpmb + 1: HALT: impossible gap (tamper)
 default /* g_blob < g_rpmb */: HALT: rollback
 ```
 
-HALT = refuse every add-checkpoint (and serve a loud error / LED); an operator
-must intervene. The witness never silently downgrades its view.
+HALT means refusing every add-checkpoint.
 
 ## Counter budget
 
 The RPMB write counter is uint32: 2³² increments ≈ 136 years at one write per
 second. One increment per committed checkpoint is comfortably within budget.
-If a deployment ever cosigns fast enough to matter, group-commit batching
-(persist several checkpoints, one RPMB increment) amortizes the counter
-without weakening the invariant: the cosignatures in a batch are still
-released only after S2 for that batch. Not implemented.
