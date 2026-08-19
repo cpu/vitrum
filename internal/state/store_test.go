@@ -408,18 +408,55 @@ func TestOpenAnchorReadFailure(t *testing.T) {
 	}
 }
 
-// TestDropsMisfiledNotes: a persisted entry whose map key disagrees with the
-// origin inside its (validly signed) note is dropped on re-admission.
-func TestDropsMisfiledNotes(t *testing.T) {
+func TestInvalidPersistedNotesHalt(t *testing.T) {
 	signed := testSignedNote(t, 7)
+	tests := map[string]map[string][]byte{
+		"origin mismatch": {
+			"other.vitrum.invalid/log": signed,
+		},
+		"malformed note": {
+			testOrigin: []byte("not a signed note"),
+		},
+		"atomic admission": {
+			testOrigin:                       signed,
+			"other.vitrum.invalid/malformed": []byte("not a signed note"),
+		},
+	}
+
+	for name, states := range tests {
+		t.Run(name, func(t *testing.T) {
+			dev := testDevice()
+			anchor := NewMemAnchor()
+			if err := Save(dev, Offset, testKey, 1, states); err != nil {
+				t.Fatal(err)
+			}
+			if err := anchor.SetAnchor(1); err != nil {
+				t.Fatal(err)
+			}
+
+			s, err := Open(dev, Offset, testKey, anchor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !s.Halted() {
+				t.Fatal("store did not halt on invalid persisted state")
+			}
+			if all := s.All(); len(all) != 0 {
+				t.Fatalf("state partially admitted: %v", all)
+			}
+			if err := s.Put(testOrigin, witness.LogState{Size: 8, Note: signed}); err != ErrHalted {
+				t.Fatalf("Put after invalid persisted state = %v, want ErrHalted", err)
+			}
+		})
+	}
+}
+
+func TestInvalidInterruptedStateDoesNotReanchor(t *testing.T) {
 	dev := testDevice()
 	anchor := NewMemAnchor()
-
-	misfiled := map[string][]byte{"other.vitrum.invalid/log": signed}
-	if err := Save(dev, Offset, testKey, 1, misfiled); err != nil {
-		t.Fatal(err)
-	}
-	if err := anchor.SetAnchor(1); err != nil {
+	if err := Save(dev, Offset, testKey, 1, map[string][]byte{
+		testOrigin: []byte("not a signed note"),
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -427,11 +464,11 @@ func TestDropsMisfiledNotes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Halted() {
-		t.Fatal("store halted; a misfiled note should drop the entry, not halt")
+	if !s.Halted() {
+		t.Fatal("store did not halt on invalid interrupted state")
 	}
-	if all := s.All(); len(all) != 0 {
-		t.Fatalf("misfiled note admitted: %v", all)
+	if got, _ := anchor.Anchor(); got != 0 {
+		t.Fatalf("anchor advanced to %d for invalid state", got)
 	}
 }
 

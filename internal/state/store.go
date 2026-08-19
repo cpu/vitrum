@@ -72,19 +72,25 @@ func Open(dev BlockDevice, offset int64, key []byte, anchor Anchor) (*RollbackSt
 	case gBlob == gRPMB:
 		// Normal: blob matches the anchor.
 		s.gen = gBlob
-		s.admit(states)
+		if err := s.admit(states); err != nil {
+			s.halt("invalid persisted state: %v", err)
+			return s, nil
+		}
 
 	case gBlob == gRPMB+1:
 		// Benign off-by-one: crash after the blob write, before the
 		// anchor advanced. No cosignature for this generation escaped
 		// (it is released only after anchoring). Re-anchor and adopt it.
+		s.gen = gBlob
+		if err := s.admit(states); err != nil {
+			s.halt("invalid persisted state: %v", err)
+			return s, nil
+		}
 		log.Printf("state: recovering interrupted commit (blob %d, anchor %d)", gBlob, gRPMB)
 		if err := anchor.SetAnchor(gBlob); err != nil {
 			s.halt("re-anchoring generation %d failed: %v", gBlob, err)
 			return s, nil
 		}
-		s.gen = gBlob
-		s.admit(states)
 
 	case gBlob > gRPMB+1:
 		// More than one un-anchored generation cannot occur in a normal
@@ -101,23 +107,28 @@ func Open(dev BlockDevice, offset int64, key []byte, anchor Anchor) (*RollbackSt
 	return s, nil
 }
 
-// admit re-admits every persisted note after structural validation. By the
-// time admit runs the blob layer has authenticated the bytes as the
-// witness's own committed state, so RestoreNote checks parseability only
-// (plus the map-key/origin cross-check below).
-func (s *RollbackStore) admit(states map[string][]byte) {
+// admit validates every persisted note before restoring any state.
+func (s *RollbackStore) admit(states map[string][]byte) error {
+	restored := make(map[string]witness.LogState, len(states))
 	for origin, noteBytes := range states {
 		o, st, err := witness.RestoreNote(noteBytes)
-		if err == nil && o != origin {
-			err = fmt.Errorf("origin mismatch: %q", o)
-		}
 		if err != nil {
-			log.Printf("state: dropping persisted entry for %q: %v", origin, err)
-			continue
+			return fmt.Errorf("entry %q: %w", origin, err)
 		}
-		s.mem.Put(o, st)
+		if o != origin {
+			return fmt.Errorf("entry %q contains origin %q", origin, o)
+		}
+		restored[o] = st
+	}
+
+	for o, st := range restored {
+		if err := s.mem.Put(o, st); err != nil {
+			return err
+		}
 		log.Printf("state: restored %q at size %d (generation %d)", o, st.Size, s.gen)
 	}
+
+	return nil
 }
 
 func (s *RollbackStore) halt(format string, args ...any) {
