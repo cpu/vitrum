@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -66,6 +67,9 @@ func main() {
 	// The witness starts unprovisioned with no key material in the
 	// image. Submissions get 503 until `vitrum provision` uploads a key.
 	w := witness.New(store)
+	go func() {
+		fatal(w.RunSequencer(context.Background(), witness.SequencerPeriod))
+	}()
 
 	usbPort, eth, iface, err := netInit()
 	if err != nil {
