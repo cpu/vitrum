@@ -502,10 +502,166 @@ func TestPoolRefusesDifferentCheckpointForPendingOrigin(t *testing.T) {
 	<-done
 }
 
+func TestPoolWithholdsResponsesAndDeduplicatesWhilePersisting(t *testing.T) {
+	store := &blockingStore{
+		MemStore: NewMemStore(),
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	w, _ := newTestWitnessWithStore(t, store)
+	l := newTestLog(t, testOrigin)
+	l.Append("a")
+	body := EncodeAddCheckpoint(0, nil, mustCheckpoint(t, l))
+
+	responses := make(chan result, 2)
+	go func() {
+		code, resp := w.AddCheckpoint(body)
+		responses <- result{code, resp}
+	}()
+	waitForPoolSize(t, w, 1)
+	sequenceDone := make(chan struct{})
+	go func() {
+		w.sequence()
+		close(sequenceDone)
+	}()
+	<-store.entered
+
+	// The first request is waiting on persistence. An identical request
+	// must find the detached pool and wait on the same result.
+	go func() {
+		code, resp := w.AddCheckpoint(body)
+		responses <- result{code, resp}
+	}()
+	select {
+	case resp := <-responses:
+		t.Fatalf("response escaped before persistence: %d (%q)", resp.code, resp.resp)
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	close(store.release)
+	<-sequenceDone
+	a, b := <-responses, <-responses
+	if a.code != http.StatusOK || b.code != http.StatusOK || !bytes.Equal(a.resp, b.resp) {
+		t.Fatalf("in-flight duplicate results = (%d, %q), (%d, %q)", a.code, a.resp, b.code, b.resp)
+	}
+	if store.batches != 1 || store.entries != 1 {
+		t.Fatalf("store commits = %d batches, %d entries; want 1 batch, 1 entry", store.batches, store.entries)
+	}
+}
+
+func TestPoolFailureRejectsWholeBatch(t *testing.T) {
+	w, _ := newTestWitnessWithStore(t, failStore{})
+	responses := make(chan result, 2)
+	for i := range 2 {
+		l := newTestLog(t, fmt.Sprintf("failure-%d.vitrum.invalid/log", i))
+		l.Append("a")
+		body := EncodeAddCheckpoint(0, nil, mustCheckpoint(t, l))
+		go func() {
+			code, resp := w.AddCheckpoint(body)
+			responses <- result{code, resp}
+		}()
+	}
+	waitForPoolSize(t, w, 2)
+	w.sequence()
+
+	for range 2 {
+		resp := <-responses
+		if resp.code != http.StatusInternalServerError || len(resp.resp) != 0 {
+			t.Fatalf("failed batch response = %d (%q), want empty 500", resp.code, resp.resp)
+		}
+	}
+	if got := w.Logs(); len(got) != 0 {
+		t.Fatalf("failed batch published state: %v", got)
+	}
+}
+
+func TestPoolRejectsCheckpointAfterSignerChange(t *testing.T) {
+	store := NewMemStore()
+	w, _ := newTestWitnessWithStore(t, store)
+	l := newTestLog(t, testOrigin)
+	l.Append("a")
+	body := EncodeAddCheckpoint(0, nil, mustCheckpoint(t, l))
+
+	response := make(chan result, 1)
+	go func() {
+		code, resp := w.AddCheckpoint(body)
+		response <- result{code, resp}
+	}()
+	waitForPoolSize(t, w, 1)
+	w.SetSigner(newTestSigner(t))
+	w.sequence()
+
+	resp := <-response
+	if resp.code != http.StatusServiceUnavailable || !bytes.Contains(resp.resp, []byte("key changed")) {
+		t.Fatalf("pending checkpoint after signer change = %d (%q), want key-changed 503", resp.code, resp.resp)
+	}
+	if got := store.All(); len(got) != 0 {
+		t.Fatalf("signer-invalidated checkpoint published state: %v", got)
+	}
+}
+
+func TestPoolCapacity(t *testing.T) {
+	w, _ := newTestWitnessWithStore(t, NewMemStore())
+	signer := w.signer.Load()
+	epoch := w.epoch.Load()
+
+	w.poolMu.Lock()
+	defer w.poolMu.Unlock()
+	var first *candidate
+	for i := range maxPoolSize {
+		origin := fmt.Sprintf("capacity-%d.vitrum.invalid/log", i)
+		text := []byte(fmt.Sprintf("%s\n0\n%s\n", origin, emptyTreeHash))
+		c := &candidate{
+			cp:     torchwood.Checkpoint{Origin: origin, Tree: tlog.Tree{N: 0, Hash: emptyTreeHash}},
+			text:   text,
+			signer: signer,
+			epoch:  epoch,
+		}
+		entry, code, resp := w.addToPool(&request{}, c)
+		if entry == nil || code != 0 || resp != nil {
+			t.Fatalf("candidate %d admission = entry %v, %d (%q)", i, entry != nil, code, resp)
+		}
+		if i == 0 {
+			first = c
+		}
+	}
+
+	// Existing work remains deduplicatable even when the pool is full.
+	if entry, code, _ := w.addToPool(&request{}, first); entry == nil || code != 0 {
+		t.Fatalf("duplicate at capacity = entry %v, code %d", entry != nil, code)
+	}
+	extraOrigin := "capacity-extra.vitrum.invalid/log"
+	extra := &candidate{
+		cp:     torchwood.Checkpoint{Origin: extraOrigin, Tree: tlog.Tree{N: 0, Hash: emptyTreeHash}},
+		text:   []byte(fmt.Sprintf("%s\n0\n%s\n", extraOrigin, emptyTreeHash)),
+		signer: signer,
+		epoch:  epoch,
+	}
+	if entry, code, _ := w.addToPool(&request{}, extra); entry != nil || code != http.StatusTooManyRequests {
+		t.Fatalf("extra candidate = entry %v, code %d; want nil, 429", entry != nil, code)
+	}
+}
+
 type countStore struct {
 	*MemStore
 	batches int
 	entries int
+}
+
+type blockingStore struct {
+	*MemStore
+	entered chan struct{}
+	release chan struct{}
+	batches int
+	entries int
+}
+
+func (s *blockingStore) PutBatch(states map[string]LogState) error {
+	s.batches++
+	s.entries += len(states)
+	close(s.entered)
+	<-s.release
+	return s.MemStore.PutBatch(states)
 }
 
 func (s *countStore) PutBatch(states map[string]LogState) error {
@@ -516,6 +672,14 @@ func (s *countStore) PutBatch(states map[string]LogState) error {
 
 func newTestWitnessWithStore(t *testing.T, store Store) (*Witness, *torchwood.CosignatureVerifier) {
 	t.Helper()
+	signer := newTestSigner(t)
+	w := New(store)
+	w.SetSigner(signer)
+	return w, signer.Verifier()
+}
+
+func newTestSigner(t *testing.T) *torchwood.CosignatureSigner {
+	t.Helper()
 	seed := make([]byte, ed25519.SeedSize)
 	if _, err := rand.Read(seed); err != nil {
 		t.Fatal(err)
@@ -524,9 +688,7 @@ func newTestWitnessWithStore(t *testing.T, store Store) (*Witness, *torchwood.Co
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := New(store)
-	w.SetSigner(signer)
-	return w, signer.Verifier()
+	return signer
 }
 
 func waitForPoolSize(t *testing.T, w *Witness, size int) {
