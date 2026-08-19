@@ -182,8 +182,9 @@ repro:
 	$(MAKE) imx TARGET=$(TARGET) OUT=$(OUT)/repro-1
 	$(MAKE) imx TARGET=$(TARGET) OUT=$(OUT)/repro-2
 	@cmp $(OUT)/repro-1/$(APP)-$(TARGET).imx $(OUT)/repro-2/$(APP)-$(TARGET).imx && \
+		cp -f $(OUT)/repro-1/$(APP)-$(TARGET).imx $(ELF).imx && \
 		sha256sum $(OUT)/repro-1/$(APP)-$(TARGET).imx && \
-		echo reproducible
+		echo "reproducible; published $(ELF).imx"
 
 e2e:
 	@scripts/e2e.sh
