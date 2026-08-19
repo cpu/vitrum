@@ -19,6 +19,8 @@ import (
 
 const target = "mx6ullevk"
 
+func securityStatus() (secure, dev bool) { return false, true }
+
 // netInit brings up ENET networking (ENET2 on hardware, ENET1 in QEMU).
 func netInit() (*usb.USB, *enet.ENET, *gnet.Interface, error) {
 	eth := imx6ul.ENET2

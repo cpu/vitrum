@@ -126,6 +126,7 @@ func handler(w *witness.Witness, persistence string) http.Handler {
 	mux.Handle("GET /logz", &logz)
 
 	mux.HandleFunc("GET /healthz", func(rw http.ResponseWriter, r *http.Request) {
+		snvsSecure, dev := securityStatus()
 		sizes := make(map[string]int64)
 		for origin, s := range w.Logs() {
 			sizes[origin] = s.Size
@@ -140,6 +141,8 @@ func handler(w *witness.Witness, persistence string) http.Handler {
 		health := map[string]any{
 			"banner":      fmt.Sprintf("vitrum %s/%s (%s)", runtime.GOOS, runtime.GOARCH, runtime.Version()),
 			"target":      target,
+			"snvs_secure": snvsSecure,
+			"dev":         dev,
 			"provisioned": w.Provisioned(),
 			"halted":      w.Halted(),
 			"witness_key": w.Verifier(),

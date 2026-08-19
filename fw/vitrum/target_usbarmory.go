@@ -24,6 +24,11 @@ import (
 
 const target = "usbarmory"
 
+func securityStatus() (secure, dev bool) {
+	secure = imx6ul.SNVS != nil && imx6ul.SNVS.Available()
+	return secure, !secure
+}
+
 // netInit brings up CDC-ECM Ethernet-over-USB on USB1.
 func netInit() (*usb.USB, *enet.ENET, *gnet.Interface, error) {
 	iface, err := newInterface(nil)
