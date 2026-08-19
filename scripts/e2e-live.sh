@@ -25,7 +25,6 @@ cd "$(dirname "$0")/.."
 
 cleanup() {
     [ -n "$QEMU_PGID" ] && kill -- "-$QEMU_PGID" 2>/dev/null || true
-    pkill -f qemu-system-arm 2>/dev/null || true
     rm -rf "$TMP"
 }
 trap cleanup EXIT
