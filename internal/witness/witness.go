@@ -133,6 +133,7 @@ type Witness struct {
 	poolMu       sync.Mutex
 	currentPool  *pool
 	inSequencing map[string]*poolEntry
+	running      atomic.Bool
 }
 
 func New(store Store) *Witness {
@@ -424,6 +425,11 @@ func (w *Witness) matchPending(entry *poolEntry, c *candidate) (*poolEntry, int,
 
 // RunSequencer commits one non-empty checkpoint pool per period.
 func (w *Witness) RunSequencer(ctx context.Context, period time.Duration) error {
+	if !w.running.CompareAndSwap(false, true) {
+		return errors.New("witness sequencer already running")
+	}
+	defer w.running.Store(false)
+
 	ticker := time.NewTicker(period)
 	defer ticker.Stop()
 

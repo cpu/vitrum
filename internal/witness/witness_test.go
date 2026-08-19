@@ -8,8 +8,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -642,6 +644,33 @@ func TestPoolCapacity(t *testing.T) {
 	}
 }
 
+func TestRunSequencerRejectsConcurrentRunner(t *testing.T) {
+	w := New(NewMemStore())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- w.RunSequencer(ctx, time.Hour)
+	}()
+	waitForSequencer(t, w, true)
+
+	if err := w.RunSequencer(context.Background(), time.Hour); err == nil ||
+		!strings.Contains(err.Error(), "already running") {
+		t.Fatalf("second RunSequencer = %v, want already-running error", err)
+	}
+
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first RunSequencer exit = %v, want context cancellation", err)
+	}
+	waitForSequencer(t, w, false)
+
+	restartCtx, restartCancel := context.WithCancel(context.Background())
+	restartCancel()
+	if err := w.RunSequencer(restartCtx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("restarted RunSequencer = %v, want context cancellation", err)
+	}
+}
+
 type countStore struct {
 	*MemStore
 	batches int
@@ -704,6 +733,18 @@ func waitForPoolSize(t *testing.T, w *Witness, size int) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("checkpoint pool did not reach size %d", size)
+}
+
+func waitForSequencer(t *testing.T, w *Witness, running bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if w.running.Load() == running {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("sequencer running state did not become %v", running)
 }
 
 // TestConcurrentSubmitAndProvisionChurn fans submissions in against
