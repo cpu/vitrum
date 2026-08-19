@@ -95,7 +95,9 @@ func serviceInterrupts(usbPort *usb.USB, eth *enet.ENET, iface *gnet.Interface) 
 			return
 		}
 
-		imx6ul.ARM.SetAlarm(pollUntil)
+		// Runtime deadlines include the wall-clock offset, while the ARM
+		// alarm is programmed against the raw counter.
+		imx6ul.ARM.SetAlarm(pollUntil - imx6ul.ARM.TimerOffset)
 		imx6ul.ARM.WaitInterrupt()
 	}
 
