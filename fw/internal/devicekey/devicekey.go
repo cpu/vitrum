@@ -3,21 +3,10 @@
 package devicekey
 
 import (
-	"crypto/pbkdf2"
-	"crypto/sha256"
 	"errors"
 	"log"
 
 	"github.com/usbarmory/tamago/soc/nxp/imx6ul"
-)
-
-// Diversifiers for the device-bound keys. Distinct strings domain-separate
-// the state-blob encryption key, the RPMB authentication key, and the SSH
-// host key seed so none can be substituted for another.
-const (
-	State   = "vitrum-state-v1"
-	RPMB    = "vitrum-rpmb-v1"
-	HostKey = "vitrum-hostkey-v1"
 )
 
 // The imx6ul package constructs the DCP instance (with a default
@@ -29,10 +18,6 @@ func init() {
 		imx6ul.DCP.Init()
 	}
 }
-
-// pbkdfIter matches armored-witness's RPMB key stretch; cheap at boot (a
-// handful of derivations).
-const pbkdfIter = 4096
 
 // deriveKey returns a 32-byte device-bound key for the given diversifier,
 // derived from the SoC hardware-unique key (CAAM preferred, DCP fallback) and
@@ -48,7 +33,7 @@ func Derive(diversifier string) (key []byte, dev bool, err error) {
 	var dk []byte
 	switch {
 	case imx6ul.CAAM != nil:
-		dk = make([]byte, sha256.Size)
+		dk = make([]byte, keyLen)
 		err = imx6ul.CAAM.DeriveKey([]byte(diversifier), dk)
 	case imx6ul.DCP != nil:
 		// DCP diversifier is AES-128-CBC-encrypted; determinism requires a
@@ -63,7 +48,7 @@ func Derive(diversifier string) (key []byte, dev bool, err error) {
 	}
 
 	uid := imx6ul.UniqueID()
-	key, err = pbkdf2.Key(sha256.New, string(dk), uid[:], pbkdfIter, sha256.Size)
+	key, err = stretchKey(dk, uid[:])
 	if err != nil {
 		return nil, dev, err
 	}
