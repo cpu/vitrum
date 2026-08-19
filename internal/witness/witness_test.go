@@ -653,6 +653,6 @@ func verifyCosig(t *testing.T, v *torchwood.CosignatureVerifier, cpNote, cosig [
 
 type failStore struct{}
 
-func (failStore) Get(string) (LogState, bool) { return LogState{}, false }
-func (failStore) Put(string, LogState) error  { return fmt.Errorf("store failed") }
-func (failStore) All() map[string]LogState    { return nil }
+func (failStore) Get(string) (LogState, bool)        { return LogState{}, false }
+func (failStore) PutBatch(map[string]LogState) error { return fmt.Errorf("store failed") }
+func (failStore) All() map[string]LogState           { return nil }

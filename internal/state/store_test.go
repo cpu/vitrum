@@ -59,6 +59,38 @@ func TestRollbackStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRollbackStoreBatchIsOneGeneration(t *testing.T) {
+	dev := testDevice()
+	anchor := NewMemAnchor()
+	s, err := Open(dev, Offset, testKey, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const otherOrigin = "other.vitrum.invalid/log"
+	updates := map[string]witness.LogState{
+		testOrigin:  {Size: 7, Note: testSignedNoteFor(t, testOrigin, 7)},
+		otherOrigin: {Size: 11, Note: testSignedNoteFor(t, otherOrigin, 11)},
+	}
+	if err := s.PutBatch(updates); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Generation(); got != 1 {
+		t.Fatalf("generation = %d, want 1", got)
+	}
+	if got, _ := anchor.Anchor(); got != 1 {
+		t.Fatalf("anchor = %d, want 1", got)
+	}
+
+	s2, err := Open(dev, Offset, testKey, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s2.All(); len(got) != 2 || got[testOrigin].Size != 7 || got[otherOrigin].Size != 11 {
+		t.Fatalf("restored batch = %v", got)
+	}
+}
+
 // TestRollbackRefused is the core rollback resistance property: restoring an
 // older storage snapshot after the witness advanced must halt the store.
 func TestRollbackRefused(t *testing.T) {
@@ -508,9 +540,13 @@ func TestAdmitsUnverifiedNotes(t *testing.T) {
 // are not verified on re-admission (SECURITY.md); signing here just keeps
 // the fixtures shaped like real notes.
 func testSignedNote(t *testing.T, size int64) []byte {
+	return testSignedNoteFor(t, testOrigin, size)
+}
+
+func testSignedNoteFor(t *testing.T, origin string, size int64) []byte {
 	t.Helper()
 
-	skey, _, err := note.GenerateKey(zeroReader{}, testOrigin)
+	skey, _, err := note.GenerateKey(zeroReader{}, origin)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +554,12 @@ func testSignedNote(t *testing.T, size int64) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return signSized(t, signer, size)
+	text := fmt.Sprintf("%s\n%d\n%s\n", origin, size, tlog.Hash{})
+	signed, err := note.Sign(&note.Note{Text: text}, signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
 }
 
 func signSized(t *testing.T, signer note.Signer, size int64) []byte {

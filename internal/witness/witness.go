@@ -50,11 +50,11 @@ type LogState struct {
 	Note []byte
 }
 
-// Store persists per-log state. Put must complete before a cosignature over
-// the state it records is released to a client.
+// Store persists per-log state. PutBatch must atomically commit every state
+// before any cosignature over the batch is released to a client.
 type Store interface {
 	Get(origin string) (LogState, bool)
-	Put(origin string, s LogState) error
+	PutBatch(states map[string]LogState) error
 	All() map[string]LogState
 }
 
@@ -90,10 +90,12 @@ func (m *MemStore) Get(origin string) (LogState, bool) {
 	return s, ok
 }
 
-func (m *MemStore) Put(origin string, s LogState) error {
+func (m *MemStore) PutBatch(states map[string]LogState) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.states[origin] = s
+	for origin, s := range states {
+		m.states[origin] = s
+	}
 	return nil
 }
 
@@ -363,7 +365,7 @@ func (w *Witness) AddCheckpoint(body []byte) (code int, resp []byte) {
 
 	// The cosignature must not be released before the state it attests
 	// to is stored (and, on the device, persisted).
-	if err := w.store.Put(cp.Origin, state); err != nil {
+	if err := w.store.PutBatch(map[string]LogState{cp.Origin: state}); err != nil {
 		return http.StatusInternalServerError, nil
 	}
 

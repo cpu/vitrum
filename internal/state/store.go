@@ -122,7 +122,7 @@ func (s *RollbackStore) admit(states map[string][]byte) error {
 	}
 
 	for o, st := range restored {
-		if err := s.mem.Put(o, st); err != nil {
+		if err := s.mem.PutBatch(map[string]witness.LogState{o: st}); err != nil {
 			return err
 		}
 		log.Printf("state: restored %q at size %d (generation %d)", o, st.Size, s.gen)
@@ -170,6 +170,11 @@ func (s *RollbackStore) All() map[string]witness.LogState {
 // the interrupted commit through the boot decision. See ROLLBACK.md, soft
 // failures.
 func (s *RollbackStore) Put(origin string, st witness.LogState) error {
+	return s.PutBatch(map[string]witness.LogState{origin: st})
+}
+
+// PutBatch commits a set of per-log updates as one generation.
+func (s *RollbackStore) PutBatch(updates map[string]witness.LogState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -195,7 +200,9 @@ func (s *RollbackStore) Put(origin string, st witness.LogState) error {
 	for o, x := range s.mem.All() {
 		states[o] = x.Note
 	}
-	states[origin] = st.Note
+	for origin, st := range updates {
+		states[origin] = st.Note
+	}
 
 	// S1: persist the blob for the new generation. A failure before the
 	// slot write was issued (validation, oversize) leaves the medium
@@ -219,7 +226,7 @@ func (s *RollbackStore) Put(origin string, st witness.LogState) error {
 	}
 
 	// S1 and S2 committed: now make the new state visible.
-	if err := s.mem.Put(origin, st); err != nil {
+	if err := s.mem.PutBatch(updates); err != nil {
 		return err
 	}
 	s.gen = next
