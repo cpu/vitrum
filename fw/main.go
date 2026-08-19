@@ -43,12 +43,14 @@ type storage struct {
 	desc   string
 }
 
-func main() {
+func firmwareMain() {
 	log.SetFlags(0)
 	// Tee the log into the RAM ring behind /logz; the console half needs
 	// the debug accessory to be observed on hardware.
 	log.SetOutput(io.MultiWriter(os.Stderr, &logz))
 	log.Printf("vitrum %s/%s (%s) target=%s", runtime.GOOS, runtime.GOARCH, runtime.Version(), target)
+	hab := habReport()
+	log.Printf("HAB: status=%s config=%s state=%s events=%d failures=%d", hab.Status, hab.Config, hab.State, len(hab.Events), hab.Failures)
 
 	// The white LED is lit by the hardware power-on default; clear it so a
 	// lit white always means something (cosign pulse, halt, fatal).
@@ -145,6 +147,7 @@ func handler(w *witness.Witness, persistence string) http.Handler {
 			"uptime":      uptime().String(),
 			"revision":    revision,
 			"logs":        sizes,
+			"hab":         habReport(),
 			"sequencer": map[string]any{
 				"running":           status.SequencerRunning,
 				"pending":           status.Pending,
