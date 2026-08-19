@@ -16,6 +16,8 @@ import (
 	usbarmory "github.com/usbarmory/tamago/board/usbarmory/mk2"
 	"github.com/usbarmory/tamago/soc/nxp/imx6ul"
 
+	"github.com/cpu/vitrum/fw/internal/devicekey"
+	"github.com/cpu/vitrum/fw/internal/hab"
 	"github.com/cpu/vitrum/internal/rpmb"
 )
 
@@ -25,15 +27,15 @@ func main() {
 	log.Printf("vitrum RPMB provisioner %s/%s (%s)", runtime.GOOS, runtime.GOARCH, runtime.Version())
 	led("white", false)
 
-	hab := habReport()
+	boot := hab.Report()
 	secure := imx6ul.SNVS != nil && imx6ul.SNVS.Available()
 	var card rpmb.Transport
 	if err := usbarmory.MMC.Detect(); err != nil {
-		serveProvisionStatus(rpmbProvisionStatus{HAB: hab, SNVSSecure: secure, Error: fmt.Sprintf("eMMC detect: %v", err)})
+		serveProvisionStatus(rpmbProvisionStatus{HAB: boot, SNVSSecure: secure, Error: fmt.Sprintf("eMMC detect: %v", err)})
 	}
 	card = &rpmbCard{card: usbarmory.MMC}
-	status := provisionRPMB(card, secure, hab, func() ([]byte, error) {
-		key, dev, err := deriveKey(diversifierRPMB)
+	status := provisionRPMB(card, secure, boot, func() ([]byte, error) {
+		key, dev, err := devicekey.Derive(devicekey.RPMB)
 		if dev && err == nil {
 			return nil, fmt.Errorf("derived RPMB key is marked DEV")
 		}

@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/cpu/vitrum/fw/internal/hab"
 	"github.com/cpu/vitrum/internal/rpmb"
 )
 
-func cleanHAB() habStatus { return habStatus{Status: "success", Config: "closed", State: "trusted"} }
+func cleanHAB() hab.Status { return hab.Status{Status: "success", Config: "closed", State: "trusted"} }
 
 func TestProvisionRPMB(t *testing.T) {
 	card := rpmb.NewFakeCard()
@@ -26,10 +27,10 @@ func TestProvisionRPMBRefusesUnsafeStates(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		secure bool
-		hab    habStatus
+		hab    hab.Status
 	}{
 		{name: "insecure SNVS", secure: false, hab: cleanHAB()},
-		{name: "HAB failure", secure: true, hab: habStatus{Status: "success", Failures: 1}},
+		{name: "HAB failure", secure: true, hab: hab.Status{Status: "success", Failures: 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			card := rpmb.NewFakeCard()

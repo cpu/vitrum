@@ -17,6 +17,7 @@ import (
 	gnet "github.com/usbarmory/go-net"
 	usbnet "github.com/usbarmory/go-net/imx-usb"
 
+	"github.com/cpu/vitrum/fw/internal/devicekey"
 	"github.com/cpu/vitrum/internal/rpmb"
 	"github.com/cpu/vitrum/internal/state"
 )
@@ -68,7 +69,7 @@ func led(name string, on bool) {
 // Pre-fuse the HUK is a non-unique test vector; deriveKey logs this and the
 // source string carries a DEV mark.
 func hostKeySeed() (seed []byte, source string, err error) {
-	seed, dev, err := deriveKey(diversifierHostKey)
+	seed, dev, err := devicekey.Derive(devicekey.HostKey)
 	if err != nil {
 		return nil, "", fmt.Errorf("host key derivation: %w", err)
 	}
@@ -114,7 +115,7 @@ func newStorage() storage {
 	}
 	dev := &sdDevice{card: usbarmory.SD}
 
-	stateKey, devKeys, err := deriveKey(diversifierState)
+	stateKey, devKeys, err := devicekey.Derive(devicekey.State)
 	if err != nil {
 		return degrade("state key derivation failed: %v", err)
 	}
@@ -155,7 +156,7 @@ func newRPMBAnchor() (anchor state.Anchor, desc string, dev bool, err error) {
 		return nil, "", false, fmt.Errorf("eMMC detect: %w", err)
 	}
 
-	rpmbKey, dev, err := deriveKey(diversifierRPMB)
+	rpmbKey, dev, err := devicekey.Derive(devicekey.RPMB)
 	if err != nil {
 		return nil, "", dev, fmt.Errorf("rpmb key derivation: %w", err)
 	}

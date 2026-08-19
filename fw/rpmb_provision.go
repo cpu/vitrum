@@ -4,30 +4,31 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/cpu/vitrum/fw/internal/hab"
 	"github.com/cpu/vitrum/internal/rpmb"
 )
 
 type rpmbProvisionStatus struct {
-	HAB                  habStatus `json:"hab"`
-	SNVSSecure           bool      `json:"snvs_secure"`
-	UnprogrammedBefore   bool      `json:"unprogrammed_before"`
-	KeyProgrammed        bool      `json:"key_programmed"`
-	AuthenticatedCounter bool      `json:"authenticated_counter"`
-	Counter              uint32    `json:"counter,omitempty"`
-	Success              bool      `json:"success"`
-	Error                string    `json:"error,omitempty"`
+	HAB                  hab.Status `json:"hab"`
+	SNVSSecure           bool       `json:"snvs_secure"`
+	UnprogrammedBefore   bool       `json:"unprogrammed_before"`
+	KeyProgrammed        bool       `json:"key_programmed"`
+	AuthenticatedCounter bool       `json:"authenticated_counter"`
+	Counter              uint32     `json:"counter,omitempty"`
+	Success              bool       `json:"success"`
+	Error                string     `json:"error,omitempty"`
 }
 
-func provisionRPMB(card rpmb.Transport, secure bool, hab habStatus, derive func() ([]byte, error)) (status rpmbProvisionStatus) {
-	status.HAB = hab
+func provisionRPMB(card rpmb.Transport, secure bool, boot hab.Status, derive func() ([]byte, error)) (status rpmbProvisionStatus) {
+	status.HAB = boot
 	status.SNVSSecure = secure
 	fail := func(err error) rpmbProvisionStatus {
 		status.Error = err.Error()
 		return status
 	}
 
-	if hab.Status != "success" || hab.Failures != 0 {
-		return fail(fmt.Errorf("HAB boot not clean: status=%s failures=%d", hab.Status, hab.Failures))
+	if boot.Status != "success" || boot.Failures != 0 {
+		return fail(fmt.Errorf("HAB boot not clean: status=%s failures=%d", boot.Status, boot.Failures))
 	}
 	if !secure {
 		return fail(errors.New("SNVS is not secure; refusing RPMB programming"))

@@ -1,6 +1,6 @@
 //go:build usbarmory
 
-package main
+package hab
 
 import (
 	"encoding/hex"
@@ -15,8 +15,8 @@ func eventStatus(event []byte) byte {
 	return event[4]
 }
 
-func makeHABEvent(event []byte) habEvent {
-	return habEvent{Status: habStatusName(eventStatus(event)), Data: hex.EncodeToString(event)}
+func makeHABEvent(event []byte) Event {
+	return Event{Status: habStatusName(eventStatus(event)), Data: hex.EncodeToString(event)}
 }
 
 func habStatusName(v byte) string {
@@ -78,14 +78,14 @@ const (
 
 var (
 	habOnce sync.Once
-	habBoot habStatus
+	habBoot Status
 )
 
 // The i.MX6 ROM vector table contains ARM EABI function pointers.
 func habCallStatus(fn, config, state uintptr) byte
 func habCallEvent(fn uintptr, status byte, index uint32, event, size uintptr) byte
 
-func habReport() habStatus {
+func Report() Status {
 	habOnce.Do(readHABReport)
 	return habBoot
 }
@@ -94,9 +94,9 @@ func readHABReport() {
 	var config, state byte
 	statusFn := *(*uintptr)(unsafe.Pointer(uintptr(habReportStatusRVT)))
 	status := habCallStatus(statusFn, uintptr(unsafe.Pointer(&config)), uintptr(unsafe.Pointer(&state)))
-	habBoot = habStatus{
+	habBoot = Status{
 		Status: habStatusName(status), Config: habConfigName(config), State: habStateName(state),
-		Events: make([]habEvent, 0),
+		Events: make([]Event, 0),
 	}
 
 	eventFn := *(*uintptr)(unsafe.Pointer(uintptr(habReportEventRVT)))

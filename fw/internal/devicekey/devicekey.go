@@ -1,6 +1,6 @@
 //go:build usbarmory
 
-package main
+package devicekey
 
 import (
 	"crypto/pbkdf2"
@@ -15,9 +15,9 @@ import (
 // the state-blob encryption key, the RPMB authentication key, and the SSH
 // host key seed so none can be substituted for another.
 const (
-	diversifierState   = "vitrum-state-v1"
-	diversifierRPMB    = "vitrum-rpmb-v1"
-	diversifierHostKey = "vitrum-hostkey-v1"
+	State   = "vitrum-state-v1"
+	RPMB    = "vitrum-rpmb-v1"
+	HostKey = "vitrum-hostkey-v1"
 )
 
 // The imx6ul package constructs the DCP instance (with a default
@@ -42,7 +42,7 @@ const pbkdfIter = 4096
 // the HUK derivation uses a non-unique test vector and any firmware on any
 // unit derives the same key, so the result binds to nothing. Callers must
 // mark such keys/identities as DEV.
-func deriveKey(diversifier string) (key []byte, dev bool, err error) {
+func Derive(diversifier string) (key []byte, dev bool, err error) {
 	dev = imx6ul.SNVS == nil || !imx6ul.SNVS.Available()
 
 	var dk []byte

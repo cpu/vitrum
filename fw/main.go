@@ -16,6 +16,7 @@ import (
 
 	"github.com/usbarmory/tamago/soc/nxp/imx6ul"
 
+	"github.com/cpu/vitrum/fw/internal/hab"
 	"github.com/cpu/vitrum/internal/state"
 	"github.com/cpu/vitrum/internal/witness"
 )
@@ -49,8 +50,8 @@ func firmwareMain() {
 	// the debug accessory to be observed on hardware.
 	log.SetOutput(io.MultiWriter(os.Stderr, &logz))
 	log.Printf("vitrum %s/%s (%s) target=%s", runtime.GOOS, runtime.GOARCH, runtime.Version(), target)
-	hab := habReport()
-	log.Printf("HAB: status=%s config=%s state=%s events=%d failures=%d", hab.Status, hab.Config, hab.State, len(hab.Events), hab.Failures)
+	habStatus := hab.Report()
+	log.Printf("HAB: status=%s config=%s state=%s events=%d failures=%d", habStatus.Status, habStatus.Config, habStatus.State, len(habStatus.Events), habStatus.Failures)
 
 	// The white LED is lit by the hardware power-on default; clear it so a
 	// lit white always means something (cosign pulse, halt, fatal).
@@ -147,7 +148,7 @@ func handler(w *witness.Witness, persistence string) http.Handler {
 			"uptime":      uptime().String(),
 			"revision":    revision,
 			"logs":        sizes,
-			"hab":         habReport(),
+			"hab":         hab.Report(),
 			"sequencer": map[string]any{
 				"running":           status.SequencerRunning,
 				"pending":           status.Pending,
