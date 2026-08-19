@@ -12,6 +12,10 @@ type rpmbProvisionStatus struct {
 	HAB                  hab.Status `json:"hab"`
 	SNVSSecure           bool       `json:"snvs_secure"`
 	UnprogrammedBefore   bool       `json:"unprogrammed_before"`
+	ProgrammedBefore     bool       `json:"programmed_before"`
+	DerivedKeyMatches    bool       `json:"derived_key_matches"`
+	ForeignKey           bool       `json:"foreign_key"`
+	Probe                string     `json:"probe"`
 	KeyProgrammed        bool       `json:"key_programmed"`
 	AuthenticatedCounter bool       `json:"authenticated_counter"`
 	Counter              uint32     `json:"counter,omitempty"`
@@ -27,26 +31,49 @@ func provisionRPMB(card rpmb.Transport, secure bool, boot hab.Status, derive fun
 		return status
 	}
 
-	if boot.Status != "success" || boot.Failures != 0 {
-		return fail(fmt.Errorf("HAB boot not clean: status=%s failures=%d", boot.Status, boot.Failures))
-	}
-	if !secure {
-		return fail(errors.New("SNVS is not secure; refusing RPMB programming"))
-	}
-
 	probe, err := rpmb.Init(card, make([]byte, 32), 0, false)
 	if err != nil {
 		return fail(fmt.Errorf("RPMB probe init: %w", err))
 	}
 	_, err = probe.Counter(false)
 	var opErr *rpmb.OperationError
-	if !errors.As(err, &opErr) || opErr.Result != rpmb.AuthenticationKeyNotYetProgrammed {
-		if err == nil {
-			return fail(errors.New("RPMB key is already programmed; refusing to modify it"))
-		}
+	if errors.As(err, &opErr) && opErr.Result == rpmb.AuthenticationKeyNotYetProgrammed {
+		status.UnprogrammedBefore = true
+		status.Probe = "unprogrammed (result 0x7)"
+	} else if err != nil {
+		status.Probe = "inconclusive"
 		return fail(fmt.Errorf("RPMB programming state is inconclusive: %w", err))
+	} else {
+		status.ProgrammedBefore = true
+		status.Probe = "programmed"
+
+		key, err := derive()
+		if err != nil {
+			return fail(fmt.Errorf("RPMB key derivation for existing key: %w", err))
+		}
+		p, err := rpmb.Init(card, key, 0, false)
+		if err != nil {
+			return fail(fmt.Errorf("RPMB init for existing key: %w", err))
+		}
+		status.Counter, err = p.Counter(true)
+		if errors.Is(err, rpmb.ErrInvalidResponseMAC) {
+			status.ForeignKey = true
+			return fail(errors.New("RPMB is programmed with a foreign key"))
+		}
+		if err != nil {
+			return fail(fmt.Errorf("RPMB derived-key diagnostic is inconclusive: %w", err))
+		}
+		status.DerivedKeyMatches = true
+		status.AuthenticatedCounter = true
+		return fail(errors.New("RPMB is already programmed with the derived key; no write attempted"))
 	}
-	status.UnprogrammedBefore = true
+
+	if boot.Status != "success" || boot.Failures != 0 {
+		return fail(fmt.Errorf("HAB boot not clean: status=%s failures=%d", boot.Status, boot.Failures))
+	}
+	if !secure {
+		return fail(errors.New("SNVS is not secure; refusing RPMB programming"))
+	}
 
 	key, err := derive()
 	if err != nil {

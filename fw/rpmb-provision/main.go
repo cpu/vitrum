@@ -39,6 +39,7 @@ func main() {
 		}
 		return key, err
 	})
+	log.Printf("RPMB probe: %s", status.Probe)
 	serveProvisionStatus(status)
 }
 

@@ -39,7 +39,7 @@ func TestProvisionRPMBRefusesUnsafeStates(t *testing.T) {
 				called = true
 				return make([]byte, 32), nil
 			})
-			if status.Success || card.Programmed() || called {
+			if status.Success || card.Programmed() || called || !status.UnprogrammedBefore || status.Probe != "unprogrammed (result 0x7)" {
 				t.Fatalf("unsafe provisioning: status=%+v programmed=%v deriveCalled=%v", status, card.Programmed(), called)
 			}
 		})
@@ -54,7 +54,22 @@ func TestProvisionRPMBRefusesProgrammedCard(t *testing.T) {
 		t.Fatal("fixture key programming failed")
 	}
 	status := provisionRPMB(card, true, cleanHAB(), func() ([]byte, error) { return key, nil })
-	if status.Success || status.UnprogrammedBefore {
+	if status.Success || status.UnprogrammedBefore || !status.ProgrammedBefore || !status.DerivedKeyMatches || !status.AuthenticatedCounter {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestProvisionRPMBDiagnosesForeignKey(t *testing.T) {
+	card := rpmb.NewFakeCard()
+	p, err := rpmb.Init(card, bytes.Repeat([]byte{0x5a}, 32), 0, false)
+	if err != nil || p.ProgramKey() != nil {
+		t.Fatal("fixture key programming failed")
+	}
+
+	status := provisionRPMB(card, true, cleanHAB(), func() ([]byte, error) {
+		return bytes.Repeat([]byte{0xa5}, 32), nil
+	})
+	if status.Success || !status.ProgrammedBefore || status.DerivedKeyMatches || !status.ForeignKey || status.AuthenticatedCounter {
 		t.Fatalf("status = %+v", status)
 	}
 }

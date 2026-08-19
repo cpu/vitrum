@@ -27,6 +27,10 @@ import (
 	"fmt"
 )
 
+// ErrInvalidResponseMAC reports that an authenticated response was not signed
+// by the key supplied to Init.
+var ErrInvalidResponseMAC = errors.New("invalid response MAC")
+
 const (
 	// FrameLength is the fixed RPMB data frame size.
 	FrameLength = 512
@@ -169,7 +173,7 @@ func (p *RPMB) op(req *DataFrame, cfg *Config) (res *DataFrame, err error) {
 	if cfg.ResponseMAC {
 		mac.Write(buf[FrameLength-macOffset:])
 		if !hmac.Equal(res.KeyMAC[:], mac.Sum(nil)) {
-			return nil, errors.New("invalid response MAC")
+			return nil, ErrInvalidResponseMAC
 		}
 	}
 
