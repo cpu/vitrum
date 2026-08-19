@@ -527,6 +527,10 @@ func TestPoolWithholdsResponsesAndDeduplicatesWhilePersisting(t *testing.T) {
 		close(sequenceDone)
 	}()
 	<-store.entered
+	if status := w.Status(); status.Pending != 0 || status.Sequencing != 1 ||
+		status.BatchesCommitted != 0 || !status.LastCommit.IsZero() {
+		t.Fatalf("status during persistence = %+v", status)
+	}
 
 	// The first request is waiting on persistence. An identical request
 	// must find the detached pool and wait on the same result.
@@ -548,6 +552,10 @@ func TestPoolWithholdsResponsesAndDeduplicatesWhilePersisting(t *testing.T) {
 	}
 	if store.batches != 1 || store.entries != 1 {
 		t.Fatalf("store commits = %d batches, %d entries; want 1 batch, 1 entry", store.batches, store.entries)
+	}
+	if status := w.Status(); status.Sequencing != 0 || status.BatchesCommitted != 1 ||
+		status.BatchesFailed != 0 || status.LastCommit.IsZero() {
+		t.Fatalf("status after persistence = %+v", status)
 	}
 }
 
@@ -574,6 +582,9 @@ func TestPoolFailureRejectsWholeBatch(t *testing.T) {
 	}
 	if got := w.Logs(); len(got) != 0 {
 		t.Fatalf("failed batch published state: %v", got)
+	}
+	if status := w.Status(); status.BatchesCommitted != 0 || status.BatchesFailed != 1 {
+		t.Fatalf("status after failed batch = %+v", status)
 	}
 }
 
@@ -671,6 +682,18 @@ func TestRunSequencerRejectsConcurrentRunner(t *testing.T) {
 	}
 }
 
+func TestStatusIncludesStoreGeneration(t *testing.T) {
+	store := &generationStore{MemStore: NewMemStore(), generation: 42}
+	w := New(store)
+	status := w.Status()
+	if !status.HasGeneration || status.Generation != 42 {
+		t.Fatalf("status generation = %d, present %v; want 42, true", status.Generation, status.HasGeneration)
+	}
+	if status.SequencerRunning || status.Pending != 0 || status.Sequencing != 0 {
+		t.Fatalf("fresh witness status = %+v", status)
+	}
+}
+
 type countStore struct {
 	*MemStore
 	batches int
@@ -684,6 +707,13 @@ type blockingStore struct {
 	batches int
 	entries int
 }
+
+type generationStore struct {
+	*MemStore
+	generation uint32
+}
+
+func (s *generationStore) Generation() uint32 { return s.generation }
 
 func (s *blockingStore) PutBatch(states map[string]LogState) error {
 	s.batches++

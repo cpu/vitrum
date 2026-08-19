@@ -77,8 +77,9 @@ boot (the device holds it in volatile RAM only).
 
 ## 6. Verification 
 
-- `/healthz`: should show `target=usbarmory`, `provisioned=true`, 
-  RPMB persistence, no DEV marks, sane `time`.
+- `/healthz`: should show `target=usbarmory`, `provisioned=true`, RPMB
+  persistence, no DEV marks, sane `time`, an increasing `generation`, and a
+  running sequencer with recent successful batches.
 - Running `vitrum selftest` passes end to end.
 
 For maximum assurance, power-cycle, re-provision and then re-feed a log. 

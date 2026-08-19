@@ -127,6 +127,10 @@ type Witness struct {
 	epoch  atomic.Uint64
 	store  Store
 
+	batchesCommitted atomic.Uint64
+	batchesFailed    atomic.Uint64
+	lastCommit       atomic.Int64
+
 	// mu serializes signer changes with batch signing and persistence.
 	mu sync.Mutex
 
@@ -186,6 +190,42 @@ func (w *Witness) Verifier() string {
 // for it has been cosigned.
 func (w *Witness) Logs() map[string]LogState {
 	return w.store.All()
+}
+
+// Status is a snapshot of checkpoint sequencing activity.
+type Status struct {
+	SequencerRunning bool
+	Pending          int
+	Sequencing       int
+	BatchesCommitted uint64
+	BatchesFailed    uint64
+	LastCommit       time.Time
+	Generation       uint32
+	HasGeneration    bool
+}
+
+// Status returns current sequencer, pool, and commit information.
+func (w *Witness) Status() Status {
+	w.poolMu.Lock()
+	pending := len(w.currentPool.entries)
+	sequencing := len(w.inSequencing)
+	w.poolMu.Unlock()
+
+	status := Status{
+		SequencerRunning: w.running.Load(),
+		Pending:          pending,
+		Sequencing:       sequencing,
+		BatchesCommitted: w.batchesCommitted.Load(),
+		BatchesFailed:    w.batchesFailed.Load(),
+	}
+	if ns := w.lastCommit.Load(); ns != 0 {
+		status.LastCommit = time.Unix(0, ns)
+	}
+	if store, ok := w.store.(interface{ Generation() uint32 }); ok {
+		status.Generation = store.Generation()
+		status.HasGeneration = true
+	}
+	return status
 }
 
 // Checkpoint returns the latest cosigned checkpoint note for the log whose
@@ -469,10 +509,12 @@ func (w *Witness) sequencePool(p *pool) {
 	signer := w.signer.Load()
 	epoch := w.epoch.Load()
 	if signer == nil {
+		w.batchesFailed.Add(1)
 		w.finishPool(p, http.StatusServiceUnavailable, []byte("witness key not provisioned\n"))
 		return
 	}
 	if w.Halted() {
+		w.batchesFailed.Add(1)
 		w.finishPool(p, http.StatusServiceUnavailable, []byte("witness halted: storage rollback or tamper detected\n"))
 		return
 	}
@@ -499,15 +541,21 @@ func (w *Witness) sequencePool(p *pool) {
 		}
 	}
 	if signFailed {
+		w.batchesFailed.Add(1)
 		w.finishPool(p, http.StatusInternalServerError, nil)
 		return
 	}
 
 	if len(states) != 0 {
 		if err := w.store.PutBatch(states); err != nil {
+			w.batchesFailed.Add(1)
 			w.finishPool(p, http.StatusInternalServerError, nil)
 			return
 		}
+		w.batchesCommitted.Add(1)
+		w.lastCommit.Store(time.Now().UnixNano())
+	} else {
+		w.batchesFailed.Add(1)
 	}
 	for _, entry := range p.entries {
 		close(entry.done)

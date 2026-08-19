@@ -113,9 +113,14 @@ func handler(w *witness.Witness, persistence string) http.Handler {
 		for origin, s := range w.Logs() {
 			sizes[origin] = s.Size
 		}
+		status := w.Status()
+		lastCommit := ""
+		if !status.LastCommit.IsZero() {
+			lastCommit = status.LastCommit.UTC().Format(time.RFC3339Nano)
+		}
 
 		rw.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(rw).Encode(map[string]any{
+		health := map[string]any{
 			"banner":      fmt.Sprintf("vitrum %s/%s (%s)", runtime.GOOS, runtime.GOARCH, runtime.Version()),
 			"target":      target,
 			"provisioned": w.Provisioned(),
@@ -125,7 +130,19 @@ func handler(w *witness.Witness, persistence string) http.Handler {
 			"time":        time.Now().UTC().Format(time.RFC3339),
 			"uptime":      time.Since(start).String(),
 			"logs":        sizes,
-		})
+			"sequencer": map[string]any{
+				"running":           status.SequencerRunning,
+				"pending":           status.Pending,
+				"sequencing":        status.Sequencing,
+				"batches_committed": status.BatchesCommitted,
+				"batches_failed":    status.BatchesFailed,
+				"last_commit":       lastCommit,
+			},
+		}
+		if status.HasGeneration {
+			health["generation"] = status.Generation
+		}
+		json.NewEncoder(rw).Encode(health)
 	})
 
 	return mux
