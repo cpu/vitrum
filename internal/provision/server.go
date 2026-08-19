@@ -270,12 +270,10 @@ func (s *Server) provision(ch ssh.Channel, name string) uint32 {
 		return fail(ch, "provision: %v", err)
 	}
 
-	// Install the new signer before destroying any previous key: SetSigner
-	// serializes with in-flight signing, so once it returns no submission
-	// can still be reading the key being rotated out.
-	s.cfg.Witness.SetSigner(signer)
-
 	s.mu.Lock()
+	// Keep signer installation and key ownership atomic with respect to
+	// concurrent provisioning and deprovisioning sessions.
+	s.cfg.Witness.SetSigner(signer)
 	zero(s.priv) // rotating replaces (and destroys) any previous key
 	s.priv = priv
 	s.mu.Unlock()
@@ -287,12 +285,9 @@ func (s *Server) provision(ch ssh.Channel, name string) uint32 {
 }
 
 func (s *Server) deprovision() {
-	// Order matters: ClearSigner serializes with in-flight signing, so the
-	// key bytes are only zeroed once no submission can still be reading
-	// them.
-	s.cfg.Witness.ClearSigner()
-
 	s.mu.Lock()
+	// ClearSigner waits for in-flight signing before the key is zeroed.
+	s.cfg.Witness.ClearSigner()
 	zero(s.priv)
 	s.priv = nil
 	s.mu.Unlock()
