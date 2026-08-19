@@ -25,7 +25,7 @@ UART2 := null
 NET ?= nic,model=imx.enet,netdev=net0 -netdev user,id=net0,net=10.0.0.0/24,host=10.0.0.2,hostfwd=tcp:127.0.0.1:8080-10.0.0.1:80,hostfwd=tcp:127.0.0.1:2222-10.0.0.1:22
 # Only the emulated target embeds a build-time host key seed; hardware
 # derives its host key from the HUK.
-HOSTSEED := fw/ssh_host.seed
+HOSTSEED := fw/vitrum/ssh_host.seed
 else
 $(error invalid TARGET "$(TARGET)" - options are: usbarmory, mx6ullevk)
 endif
@@ -34,7 +34,7 @@ ELF := $(OUT)/$(APP)-$(TARGET)
 
 GOENV := GOOS=tamago GOOSPKG=$(GOOSPKG) GOARM=7 GOARCH=arm
 # Build tags:
-#   $(TARGET) - selects the fw/target_*.go file (usbarmory | mx6ullevk)
+#   $(TARGET) - selects the fw/vitrum/target_*.go file (usbarmory | mx6ullevk)
 #   gvisor    - selects the gvisor network stack
 #   native    - tamago runtime for real hardware; swapped to
 #               semihosting under `make qemu` (maps time/exit hooks to
@@ -48,8 +48,7 @@ GOENV := GOOS=tamago GOOSPKG=$(GOOSPKG) GOARM=7 GOARCH=arm
 # the app to define its own `//go:linkname ramSize` variable. That's
 # useful once we need a DMA reservation; until then the board defaults
 # (512MB) are what we want.
-comma := ,
-GOFLAGS := -tags $(TARGET),gvisor,native$(if $(EXTRA_TAGS),$(comma)$(EXTRA_TAGS)) -trimpath -buildvcs=false \
+GOFLAGS := -tags $(TARGET),gvisor,native -trimpath -buildvcs=false \
            -ldflags "-s -w -T $(TEXT_START) -R 0x1000 -X main.revision=$(REVISION)"
 
 QEMU ?= qemu-system-arm -machine mcimx6ul-evk -cpu cortex-a7 -m 512M \
@@ -84,12 +83,14 @@ check_tamago:
 #
 # NOTE: reproducibility comparisons of the emulated image require the same
 # seed file; `make clean` must never remove it.
-fw/ssh_host.seed:
-	go run ./cmd/vitrum hostkey -seed fw/ssh_host.seed -pub keys/ssh_host.pub
+fw/vitrum/ssh_host.seed:
+	go run ./cmd/vitrum hostkey -seed fw/vitrum/ssh_host.seed -pub keys/ssh_host.pub
+
+FWPKG ?= ./fw/vitrum
 
 $(ELF): check_tamago $(HOSTSEED)
 	@mkdir -p $(OUT)
-	$(GOENV) $(TAMAGO) build $(GOFLAGS) -o $(ELF) ./fw
+	$(GOENV) $(TAMAGO) build $(GOFLAGS) -o $(ELF) $(FWPKG)
 
 $(ELF).bin: CROSS_COMPILE=arm-none-eabi-
 $(ELF).bin: $(ELF)
@@ -166,10 +167,10 @@ $(ELF)-signed.imx: check_tamago check_hab_keys $(ELF).imx
 imx_signed: $(ELF)-signed.imx
 
 rpmb_provision:
-	$(MAKE) imx APP=vitrum-rpmb-provision TARGET=usbarmory EXTRA_TAGS=rpmbprovision
+	$(MAKE) imx APP=vitrum-rpmb-provision FWPKG=./fw/rpmb-provision TARGET=usbarmory
 
 rpmb_provision_signed:
-	$(MAKE) imx_signed APP=vitrum-rpmb-provision TARGET=usbarmory EXTRA_TAGS=rpmbprovision
+	$(MAKE) imx_signed APP=vitrum-rpmb-provision FWPKG=./fw/rpmb-provision TARGET=usbarmory
 
 ifeq ($(TARGET),mx6ullevk)
 # qemu-build exists so the e2e scripts can build in the foreground (the

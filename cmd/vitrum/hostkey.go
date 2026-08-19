@@ -16,7 +16,7 @@ import (
 // Hardware derives its host key from the HUK instead.
 func cmdHostkey(args []string) {
 	fs := flag.NewFlagSet("hostkey", flag.ExitOnError)
-	seedPath := fs.String("seed", "fw/ssh_host.seed", "output path for the host key seed (emulated-target build input)")
+	seedPath := fs.String("seed", "fw/vitrum/ssh_host.seed", "output path for the host key seed (emulated-target build input)")
 	pubPath := fs.String("pub", "keys/ssh_host.pub", "output path for the host public key (pinned by `vitrum provision`)")
 	force := fs.Bool("force", false, "overwrite an existing seed (changes the emulated image hash and the pinned host key)")
 	fs.Parse(args)

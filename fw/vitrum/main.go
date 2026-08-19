@@ -44,7 +44,7 @@ type storage struct {
 	desc   string
 }
 
-func firmwareMain() {
+func main() {
 	log.SetFlags(0)
 	// Tee the log into the RAM ring behind /logz; the console half needs
 	// the debug accessory to be observed on hardware.

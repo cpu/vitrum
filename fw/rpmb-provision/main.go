@@ -1,4 +1,4 @@
-//go:build usbarmory && rpmbprovision
+//go:build usbarmory
 
 package main
 
@@ -18,7 +18,6 @@ import (
 
 	"github.com/cpu/vitrum/fw/internal/devicekey"
 	"github.com/cpu/vitrum/fw/internal/hab"
-	"github.com/cpu/vitrum/internal/rpmb"
 )
 
 func main() {
@@ -29,11 +28,10 @@ func main() {
 
 	boot := hab.Report()
 	secure := imx6ul.SNVS != nil && imx6ul.SNVS.Available()
-	var card rpmb.Transport
 	if err := usbarmory.MMC.Detect(); err != nil {
 		serveProvisionStatus(rpmbProvisionStatus{HAB: boot, SNVSSecure: secure, Error: fmt.Sprintf("eMMC detect: %v", err)})
 	}
-	card = &rpmbCard{card: usbarmory.MMC}
+	card := &rpmbCard{card: usbarmory.MMC}
 	status := provisionRPMB(card, secure, boot, func() ([]byte, error) {
 		key, dev, err := devicekey.Derive(devicekey.RPMB)
 		if dev && err == nil {
@@ -54,7 +52,7 @@ func serveProvisionStatus(status rpmbProvisionStatus) {
 		go fatalPattern()
 	}
 
-	usbPort, eth, iface, err := netInit()
+	usbPort, err := netInit()
 	if err != nil {
 		fatal(fmt.Errorf("status network: %w", err))
 	}
@@ -71,7 +69,7 @@ func serveProvisionStatus(status rpmbProvisionStatus) {
 		fatal(err)
 	}
 	go func() { fatal((&http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}).Serve(listener)) }()
-	serviceInterrupts(usbPort, eth, iface)
+	serviceInterrupts(usbPort)
 }
 
 func fatalPattern() {
@@ -83,4 +81,9 @@ func fatalPattern() {
 		led("white", true)
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+func fatal(err error) {
+	log.Printf("fatal: %v", err)
+	fatalPattern()
 }

@@ -27,7 +27,7 @@ witness cosign a checkpoint inconsistent with one it has already cosigned.
 `K_state` and `K_rpmb` are derived from the SoC hardware-unique key (CAAM/DCP)
 with distinct diversifiers. Pre-fuse, HUK derivation uses a non-unique test
 vector and any firmware derives the same keys; such boots are marked DEV
-(see `fw/keys.go`); the protection matures once fuses are burned.
+(see `fw/internal/devicekey`); the protection matures once fuses are burned.
 
 ## Invariant
 

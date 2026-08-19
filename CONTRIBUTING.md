@@ -23,7 +23,7 @@ The `Makefile` also provides:
 ## Hardware
 
 QEMU testing is limited to the `mx6ullevk` build tag. Code such as
-`fw/keys.go` and `fw/target_usbarmory.go` is gated by the `usbarmory` build
+`fw/internal/devicekey` and `fw/vitrum/target_usbarmory.go` are gated by the `usbarmory` build
 tag and requires hardware to exercise HUK derivation (CAAM/DCP), microSD/eMMC
 RPMB transport, LEDs, and USB device mode. Test changes to this code using
 [PRODUCTION_SETUP.md](PRODUCTION_SETUP.md).

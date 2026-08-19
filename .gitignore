@@ -15,7 +15,7 @@ go.work.sum
 /vitrum
 
 # Local test key material
-/fw/ssh_host.seed
+/fw/vitrum/ssh_host.seed
 /keys/
 
 # Nix build output symlinks
