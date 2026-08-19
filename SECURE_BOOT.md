@@ -31,8 +31,8 @@ key authenticates HAB commands; the IMG key authenticates the image data.
 
 - Use a standard USB armory Mk II with an i.MX6ULZ revision supported by the
   upstream guide.
-- Keep the factory eMMC Linux installation bootable. `crucible` runs there as
-  root with `nvmem-imx-ocotp` loaded.
+- Keep the factory eMMC Linux installation bootable until HAB is closed.
+  `crucible` runs there as root with `nvmem-imx-ocotp` loaded.
 - Use a dedicated microSD card and identify its whole-device path exactly.
 - Build from a clean, reviewed commit in `nix develop`.
 - Store the HAB directory on encrypted offline-capable storage. Make two
@@ -48,6 +48,27 @@ export HAB_KEYS=/secure/vitrum-hab-keys
 export ARMORY_CARD=/dev/sdX
 test -b "$ARMORY_CARD"
 ```
+
+## Boot-media selection
+
+The Mk II [slide switch][boot-modes] selects the primary boot medium. Move it
+toward the eMMC package for eMMC boot and toward the microSD slot for microSD
+boot. The selection controls the next boot; shut down or power off before
+moving the switch except for the explicit final transition in section 8.
+
+The ROM tries eMMC, then microSD, then USB SDP when eMMC boot is selected. It
+tries microSD, then USB SDP when microSD boot is selected. MicroSD mode does
+not fall back to eMMC.
+
+This runbook uses two environments:
+
+- factory Linux on eMMC runs the target-side `crucible` fuse tool; and
+- vitrum boots directly from the microSD as a bare-metal i.MX image.
+
+The factory Linux image is not a post-provisioning recovery environment unless
+it is separately HAB-signed by a trusted SRK. Once `SEC_CONFIG` is closed, the
+ROM rejects an unsigned eMMC image just as it rejects an unsigned microSD
+image.
 
 ## 1. Install the pinned host tool
 
@@ -124,7 +145,8 @@ revision, and the key manifest together.
 
 ## 4. Boot the signed image while HAB is open
 
-Confirm the unit is still open from factory Linux before touching OTP:
+With the switch toward eMMC, boot factory Linux and confirm the unit is still
+open before touching OTP:
 
 ```bash
 crucible -s -m IMX6UL -r 1 -b 2 read SEC_CONFIG
@@ -150,9 +172,11 @@ sudo dd if="$ARMORY_CARD" bs=1 skip=1024 count="$IMAGE_SIZE" status=none \
 sha256sum out/vitrum-usbarmory-signed.imx
 ```
 
-Boot from microSD and require `/healthz` and `vitrum selftest` to pass. Power
-cycle and repeat. This validates the image layout and runtime, but not HAB
-authentication: open HAB can continue after an authentication failure.
+Shut down factory Linux, power off, move the switch toward the microSD slot,
+and boot vitrum. Require `/healthz` and `vitrum selftest` to pass. Power-cycle
+without moving the switch and repeat. This validates the image layout and
+runtime, but not HAB authentication: open HAB can continue after an
+authentication failure.
 
 For a non-sacrificial unit, make pre-close authentication a mandatory extra
 gate: boot an instrumented build that calls HAB's `report_status` and
@@ -162,17 +186,74 @@ expose those ROM APIs.
 
 ## 5. Prepare the fuse session
 
-Boot factory Linux from eMMC. Confirm the microSD still contains the archived
-signed-image digest from the host, then copy the 32-byte fuse file to the unit
-over an authenticated channel. On both systems compare:
+Shut down vitrum, power off, move the switch toward eMMC, and boot factory
+Linux. On the protected host, recompute the expected image size and digest
+from the archived artifact:
 
 ```bash
-sha256sum SRK_1_2_3_4_fuse.bin
+IMAGE_SIZE=$(stat -c %s out/vitrum-usbarmory-signed.imx)
+IMAGE_SHA256=$(sha256sum out/vitrum-usbarmory-signed.imx | cut -d ' ' -f 1)
+printf 'size=%s sha256=%s\n' "$IMAGE_SIZE" "$IMAGE_SHA256"
 ```
 
-On the armory, as root:
+Connect to factory Linux and identify both MMC devices. If the armory Linux host
+key has not already been verified in a trusted setup session, stop and establish
+that trust before beginning the fuse session. Replace the address and 
+known-hosts path as required:
 
 ```bash
+export ARMORY_SSH=root@10.0.0.1
+export ARMORY_KNOWN_HOSTS=/secure/usbarmory-factory-known_hosts
+ssh -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile="$ARMORY_KNOWN_HOSTS" "$ARMORY_SSH"
+```
+
+In that root shell, find the device backing `/`, then identify the other MMC
+device as the microSD. Do not assume whether it is `mmcblk0` or `mmcblk1`:
+
+```bash
+findmnt -no SOURCE /
+lsblk -o NAME,PATH,SIZE,TYPE,MOUNTPOINT
+export ARMORY_SD=/dev/mmcblkX
+test -b "$ARMORY_SD"
+case "$(findmnt -no SOURCE /)" in
+  "$ARMORY_SD"*) echo "refusing root device" >&2; false ;;
+esac
+```
+
+Still in the root shell, set `IMAGE_SIZE` to the decimal value printed on the
+host. Hash exactly the range written in section 4, including neither the 1 KiB
+prefix nor the raw state area:
+
+```bash
+IMAGE_SIZE=<decimal size printed on host>
+dd if="$ARMORY_SD" bs=1 skip=1024 count="$IMAGE_SIZE" status=none |
+  sha256sum
+```
+
+Stop unless this digest equals `IMAGE_SHA256` from the host. Exit the root
+shell, hash the fuse file locally, create a private destination directory, and
+copy it using the same pinned SSH identity:
+
+```bash
+sha256sum "$HAB_KEYS/SRK_1_2_3_4_fuse.bin"
+ssh -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile="$ARMORY_KNOWN_HOSTS" "$ARMORY_SSH" \
+  'install -d -m 700 /root/vitrum-hab'
+scp -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile="$ARMORY_KNOWN_HOSTS" \
+  "$HAB_KEYS/SRK_1_2_3_4_fuse.bin" \
+  "$ARMORY_SSH:/root/vitrum-hab/"
+ssh -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile="$ARMORY_KNOWN_HOSTS" "$ARMORY_SSH" \
+  'sha256sum /root/vitrum-hab/SRK_1_2_3_4_fuse.bin'
+```
+
+Stop unless the local and remote fuse-file digests match. Reconnect with the
+same SSH options. On the armory, as root:
+
+```bash
+cd /root/vitrum-hab
 modprobe nvmem-imx-ocotp
 FUSE_HEX=$(od -An -v -tx1 SRK_1_2_3_4_fuse.bin | tr -d ' \n')
 test "${#FUSE_HEX}" -eq 64
@@ -244,6 +325,11 @@ done
 
 ## 8. Final gate and close HAB
 
+Factory Linux is still running from eMMC at this point. Moving the boot switch
+does not replace the running image; it changes the source selected at the next
+reset. Before closing HAB, move the switch toward the microSD slot and visually
+confirm its position. Do not reboot yet.
+
 Before running the next command, confirm all of the following:
 
 - the signed microSD image booted twice while open;
@@ -251,7 +337,13 @@ Before running the next command, confirm all of the following:
 - the fused SRK hash matched `FUSE_HEX` before `SRK_LOCK` was set;
 - `SRK_LOCK` and every selected hardening fuse read back correctly;
 - two verified offline key backups exist; and
-- the unit is configured to boot the signed microSD on its next reset.
+- the switch is toward the microSD slot, so the signed microSD is selected on
+  the next reset.
+
+Unless the factory eMMC image was independently HAB-signed by one of these
+SRKs, this is the last session in which it can boot. After closure, the ROM
+rejects that image. Select microSD directly; do not rely on recovery or
+fallback behavior after an eMMC authentication failure.
 
 `SEC_CONFIG` is the point of no return:
 
@@ -260,9 +352,9 @@ crucible -m IMX6UL -r 1 -b 2 -e big blow SEC_CONFIG 0b11
 crucible -s -m IMX6UL -r 1 -b 2 read SEC_CONFIG
 ```
 
-Stop unless the read-back is `0b11`. Shut down factory Linux cleanly, select
-microSD boot, and power-cycle. Do not rewrite the card between closing and
-this boot.
+Stop unless the read-back is `0b11`. Shut down factory Linux cleanly and
+power-cycle without moving the switch. Do not rewrite or remove the card
+between closing and this boot.
 
 Require the closed unit to enumerate, return a healthy `/healthz`, and pass
 `vitrum selftest`. A failure here ends the test; preserve the card, logs, fuse
@@ -305,3 +397,4 @@ creating that SRK's CSF and IMG certificates with the same ceremony used for
 SRK 1.
 
 [upstream]: https://github.com/usbarmory/usbarmory/wiki/Secure-boot-%28Mk-II%29
+[boot-modes]: https://github.com/usbarmory/usbarmory/wiki/Boot-Modes-%28Mk-II%29
