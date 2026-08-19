@@ -9,10 +9,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
-
-	"golang.org/x/mod/sumdb/tlog"
 
 	"github.com/cpu/vitrum/internal/witness"
 )
@@ -95,13 +94,12 @@ func cmdRecord(args []string) {
 			log.Fatal(err)
 		}
 
-		// tampered proof first (witness state is still at cp1),
-		// then the honest growth
-		bad := make(tlog.TreeProof, len(proof))
-		copy(bad, proof)
-		bad[0][0] ^= 0xff
-
-		step("02-badproof", http.StatusUnprocessableEntity, witness.EncodeAddCheckpoint(cp1.N, bad, cpNote2))
+		// Submit a tampered proof first when the proof is non-empty.
+		if len(proof) > 0 {
+			bad := slices.Clone(proof)
+			bad[0][0] ^= 0xff
+			step("02-badproof", http.StatusUnprocessableEntity, witness.EncodeAddCheckpoint(cp1.N, bad, cpNote2))
+		}
 		step("03-grow", http.StatusOK, witness.EncodeAddCheckpoint(cp1.N, proof, cpNote2))
 	}
 
