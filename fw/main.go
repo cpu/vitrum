@@ -82,7 +82,14 @@ func main() {
 	}
 
 	go func() {
-		fatal(http.Serve(listener, handler(w, persistence)))
+		srv := &http.Server{
+			Handler:           handler(w, persistence),
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      10 * time.Second,
+			IdleTimeout:       30 * time.Second,
+		}
+		fatal(srv.Serve(listener))
 	}()
 
 	if err := startSSH(w); err != nil {
