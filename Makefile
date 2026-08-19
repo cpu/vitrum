@@ -123,7 +123,7 @@ $(ELF).imx: $(ELF).bin $(ELF).dcd
 # does NOT activate HAB, and must never be flashed without explicit human
 # approval. On an unfused (HAB-open) unit the signed image boots exactly like
 # the unsigned one and HAB records verification events but enforces nothing.
-# SECURE_BOOT.md is the full runbook (SRK generation, fuse tables, revocation).
+# PRODUCTION_SETUP.md is the full runbook (SRK generation, fuses, RPMB).
 #
 # HAB_KEYS must point at a directory holding the CSF/IMG key+cert pairs and the
 # SRK table. SRK index selected with HAB_SRK_INDEX (default 1).
@@ -133,7 +133,7 @@ CRUCIBLE_VERSION := v0.0.0-20260105222051-0bd71c72232c
 check_hab_keys:
 	@if [ "$(HAB_KEYS)" == "" ]; then \
 		echo 'Set HAB_KEYS to the directory holding the secure-boot keys.'; \
-		echo 'See SECURE_BOOT.md (generate them with habtool; do NOT burn fuses).'; \
+		echo 'See PRODUCTION_SETUP.md (generate them with habtool; do NOT burn fuses).'; \
 		exit 1; \
 	fi
 	@for file in \
@@ -160,7 +160,7 @@ $(ELF)-signed.imx: check_tamago check_hab_keys $(ELF).imx
 	cat $(ELF).imx $(ELF).csf > $(ELF)-signed.imx
 	@echo
 	@echo "Produced $(ELF)-signed.imx (NOT flashed, NOT fused)."
-	@echo "Flashing / fuse burning is a documented, human-only step; see SECURE_BOOT.md."
+	@echo "Flashing / fuse burning is a documented, human-only step; see PRODUCTION_SETUP.md."
 
 imx_signed: $(ELF)-signed.imx
 

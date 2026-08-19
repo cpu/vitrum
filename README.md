@@ -39,8 +39,10 @@ The `Makefile` provides these targets:
     make imx          # build bootable image for the armory (TARGET=usbarmory)
     make repro        # verify a reproducible build
 
-`make imx_signed` produces (but never flashes) a HAB-signed image. The fuse and
-flash operations are out of scope.
+`make imx_signed` produces (but never flashes) a HAB-signed image. See
+[PRODUCTION_SETUP.md](PRODUCTION_SETUP.md) for the hardware ceremony; it is
+not yet ready for execution because the RPMB provisioning image remains to be
+implemented and tested.
 
 ## Operating
 

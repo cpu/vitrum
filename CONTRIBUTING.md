@@ -26,7 +26,7 @@ QEMU testing is limited to the `mx6ullevk` build tag. Code such as
 `fw/keys.go` and `fw/target_usbarmory.go` is gated by the `usbarmory` build
 tag and requires hardware to exercise HUK derivation (CAAM/DCP), microSD/eMMC
 RPMB transport, LEDs, and USB device mode. Test changes to this code using
-[HARDWARE_SETUP.md](HARDWARE_SETUP.md).
+[PRODUCTION_SETUP.md](PRODUCTION_SETUP.md).
 
 ## Test Data
 
