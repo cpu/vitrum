@@ -233,7 +233,19 @@ func (f *sshFlags) dialTOFU() (*ssh.Client, error) {
 		client.Close()
 		return nil, err
 	}
-	if err := os.WriteFile(*f.hostKey, ssh.MarshalAuthorizedKey(presented), 0o600); err != nil {
+	pin, err := os.OpenFile(*f.hostKey, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		client.Close()
+		return nil, fmt.Errorf("pinning host key: %v", err)
+	}
+	if _, err := pin.Write(ssh.MarshalAuthorizedKey(presented)); err != nil {
+		pin.Close()
+		os.Remove(*f.hostKey)
+		client.Close()
+		return nil, fmt.Errorf("pinning host key: %v", err)
+	}
+	if err := pin.Close(); err != nil {
+		os.Remove(*f.hostKey)
 		client.Close()
 		return nil, fmt.Errorf("pinning host key: %v", err)
 	}
