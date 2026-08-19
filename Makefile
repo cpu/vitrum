@@ -1,4 +1,4 @@
-# vitrum firmware build, cribbed from usbarmory/tamago-example.
+# Firmware build based on usbarmory/tamago-example.
 
 SHELL := $(shell command -v bash)
 

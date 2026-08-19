@@ -1,6 +1,4 @@
-// Package testlog is a minimal in-memory transparency log used by the
-// witness tests and `vitrum selftest` to synthesize checkpoints and
-// consistency proofs against a log under test control.
+// Package testlog implements an in-memory transparency log for tests.
 package testlog
 
 import (
@@ -12,8 +10,7 @@ import (
 	"golang.org/x/mod/sumdb/tlog"
 )
 
-// Log is a minimal signed-note transparency log with an in-memory Merkle
-// tree.
+// Log is a signed-note transparency log with an in-memory Merkle tree.
 type Log struct {
 	Origin string
 	Signer note.Signer
@@ -23,8 +20,7 @@ type Log struct {
 	n      int64
 }
 
-// New generates a fresh signed-note keypair from rand and returns a Log
-// ready to receive Append calls.
+// New returns an empty Log with a new signed-note keypair.
 func New(rand io.Reader, origin string) (*Log, error) {
 	skey, vkey, err := note.GenerateKey(rand, origin)
 	if err != nil {

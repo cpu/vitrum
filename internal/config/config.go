@@ -1,20 +1,11 @@
-// Package config holds compile-time configuration for the HOST tooling and
-// tests: the registry of known logs behind `vitrum feed -log-name`, key
-// names, and the selftest log identity. The firmware reads none of it; the
-// witness has no origin allowlist and verifies no log signatures
-// (SECURITY.md), so witnessing a new log requires no firmware change.
+// Package config holds log and key defaults for host tools and tests.
+// The firmware does not use this package; see SECURITY.md.
 package config
 
-// WitnessKeyName is the default witness key name used by `vitrum keygen`
-// and `vitrum provision`. The name travels with the key at provisioning time
-// (nothing is baked into the firmware). The operator can override it with
-// -name during provisioning once a real identity exists.
+// WitnessKeyName is the default used by `vitrum keygen` and `vitrum provision`.
 const WitnessKeyName = "vitrum-UNSAFE-test-key.invalid"
 
-// Selftest names the synthetic log `vitrum selftest` drives against a
-// running witness (any origin is accepted, so no firmware configuration
-// is involved). The seed is the harness's `-seed` default; the log
-// keypair is derived from it at runtime.
+// Selftest configures the synthetic log used by `vitrum selftest`.
 const (
 	SelftestOrigin = "vitrum-selftest.invalid/log"
 	SelftestSeed   = "vitrum-selftest-seed-1"
@@ -25,15 +16,11 @@ type Log struct {
 	// Origin is the log's checkpoint origin line.
 	Origin string
 
-	// VKey is the log's public verifier key in signed-note format. The
-	// host-side tooling (feed, record, selftest) verifies checkpoints
-	// against it before submitting them; the firmware deliberately omits
-	// that verification (SECURITY.md).
+	// VKey is the log's signed-note verifier key.
 	VKey string
 }
 
-// Logs is the registry of known logs for the host tooling. It does not
-// gate the witness: the firmware cosigns any origin.
+// Logs is the host tooling's known-log registry, not a firmware allowlist.
 var Logs = []Log{
 	{
 		// keyserver.geomys.org (https://words.filippo.io/keyserver-tlog/)

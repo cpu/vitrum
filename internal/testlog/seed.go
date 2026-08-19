@@ -5,9 +5,7 @@ import (
 	"encoding/binary"
 )
 
-// SeedReader is a deterministic io.Reader yielding SHA-256(seed || ctr)
-// blocks, so a signed-note keypair can be re-derived from a seed string
-// instead of checking in key material.
+// SeedReader yields deterministic SHA-256(seed || counter) blocks.
 type SeedReader struct {
 	seed []byte
 	ctr  uint64

@@ -9,17 +9,16 @@ import (
 	"sync"
 )
 
-// FakeCard is an in-memory eMMC RPMB partition for host tests and emulated
-// (QEMU) runs, where no real eMMC exists.
+// FakeCard is an in-memory eMMC RPMB partition for tests and QEMU.
 //
-// It faithfully models the parts of JESD84-B51 the protocol relies on: a
+// It models the parts of JESD84-B51 the protocol relies on: a
 // monotonic write counter, HMAC-SHA256 request/response authentication keyed
 // by the programmed key, nonce echo on reads, result-read framing, and the
 // key-not-yet-programmed state. Its counter and contents survive across
 // [RPMB] instances built over the same FakeCard, so a test can simulate a
 // reboot (new RPMB over the same card) and a storage rollback (restore a
 // snapshot of unrelated storage) independently; the RPMB counter cannot be
-// rolled back, exactly as on hardware.
+// rolled back.
 //
 // FakeCard is safe for the single-goroutine use the witness makes of it; its
 // mutex only guards against the RPMB instance's own concurrency.

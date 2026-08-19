@@ -12,10 +12,8 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// cmdHostkey generates the build-time SSH host key for the *emulated* target
-// (QEMU has no HUK): a seed baked into the mx6ullevk image plus the derived
-// public key for client-side pinning. Hardware derives its host key on-device
-// from the HUK instead and embeds no key material.
+// cmdHostkey generates the emulated target's host key seed and public key.
+// Hardware derives its host key from the HUK instead.
 func cmdHostkey(args []string) {
 	fs := flag.NewFlagSet("hostkey", flag.ExitOnError)
 	seedPath := fs.String("seed", "fw/ssh_host.seed", "output path for the host key seed (emulated-target build input)")
