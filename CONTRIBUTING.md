@@ -2,19 +2,16 @@
 
 ## Development environment
 
-The quickest path is the Nix devShell (`nix develop`, w/ optional `direnv` 
-support). The TamaGo toolchain bootstraps via `go tool`, nothing is
-installed globally.
+Use the Nix devShell (`nix develop`), optionally with `direnv`. The TamaGo
+toolchain bootstraps through `go tool`; nothing is installed globally.
 
-If you prefer to avoid Nix, then your dev environment will need Go 1.24+, 
-`uboot-tools`, `gcc`, `qemu` and `gnumake`.
+Without Nix, install Go 1.24+, `uboot-tools`, `gcc`, `qemu`, and `gnumake`.
 
 ## Testing
 
-Host-side unit tests that don't require hardware (emulated or otherwise) are
-run with `go test ./...` like any other Go project.
+Run host-side unit tests with `go test ./...`.
 
-For more involved testing the `Makefile` offers:
+The `Makefile` also provides:
 
     make e2e        # boot the mx6ullevk target under QEMU, drive the full
                     # provisioning + witnessing flow
@@ -24,15 +21,11 @@ For more involved testing the `Makefile` offers:
 
 ## Hardware
 
-QEMU testing is limited by the `mx6ullevk` build tag. Some code (e.g. 
-`fw/keys.go` and `fw/target_usbarmory.go`) are gated by the `usbarmory` build
-tag and require real hardware. 
-
-For example, for HUK key derivation (CAAM/DCP), the usdhc microSD/eMMC RPMB 
-transport, LEDs, and USB device mode. 
-
-Changes made to this code requires testing with hardware 
-([HARDWARE_SETUP.md](HARDWARE_SETUP.md)).
+QEMU testing is limited to the `mx6ullevk` build tag. Code such as
+`fw/keys.go` and `fw/target_usbarmory.go` is gated by the `usbarmory` build
+tag and requires hardware to exercise HUK derivation (CAAM/DCP), microSD/eMMC
+RPMB transport, LEDs, and USB device mode. Test changes to this code using
+[HARDWARE_SETUP.md](HARDWARE_SETUP.md).
 
 ## Test Data
 

@@ -1,25 +1,22 @@
 # vitrum security model
 
-The scope of vitrum is deliberately small and easy to audit. It's a black
-box that reliably enforces that there are no split views of a witnessed log.
-
-This document records some particularly notable aspects of the security model.
+Vitrum enforces per-log consistency. This document defines its trust boundary
+and accepted risks.
 
 ## Network reachability is privileged
 
-Anything that can reach the device over the network is trusted not to
-be malicious. On the USB armory Mk II the "network" is Ethernet-over-USB, 
-so the boundary is the attached host and whatever it forwards. 
-The armory and its firmware enforce no split views, and trusts the host
-for everything else.
+The witness trusts anything that can reach it over the network. On the USB
+armory Mk II, that network is Ethernet-over-USB, so the boundary is the
+attached host and anything it forwards. The firmware enforces consistency and
+trusts the host for everything else.
 
 1. Submissions are not authenticated and there is no origin
    allowlist. The firmware verifies no log signatures and cosigns a
-   consistent checkpoint for any origin. This means witnessing a new log 
+   consistent checkpoint for any origin. This means witnessing a new log
    requires no rebuild but upstream clients must verify log signatures.
    
-2. SSH accepts any client. There is no authorized_keys set anyone
-   who can reach port 22 can run every provisioning command.
+2. SSH accepts any client. There is no `authorized_keys` set; anyone who can
+   reach port 22 can run every provisioning command.
 
 ## Armory firmware
 
