@@ -562,16 +562,6 @@ func testSignedNoteFor(t *testing.T, origin string, size int64) []byte {
 	return signed
 }
 
-func signSized(t *testing.T, signer note.Signer, size int64) []byte {
-	t.Helper()
-	text := fmt.Sprintf("%s\n%d\n%s\n", testOrigin, size, tlog.Hash{})
-	signed, err := note.Sign(&note.Note{Text: text}, signer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return signed
-}
-
 const testOrigin = "test.vitrum.invalid/log"
 
 // zeroReader is a deterministic io.Reader so tests never require committed key
