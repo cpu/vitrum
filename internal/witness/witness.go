@@ -15,6 +15,7 @@ package witness
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"filippo.io/torchwood"
 	"golang.org/x/mod/sumdb/note"
@@ -37,6 +39,12 @@ const (
 	// maxProofLines is the c2sp.org/tlog-witness limit on consistency
 	// proof hashes per request.
 	maxProofLines = 63
+
+	// SequencerPeriod is the maximum frequency of persistent state commits.
+	SequencerPeriod = 200 * time.Millisecond
+
+	// maxPoolSize bounds the number of distinct origins waiting for a commit.
+	maxPoolSize = 256
 )
 
 // LogState is the witness's view of a single log.
@@ -116,14 +124,19 @@ func (m *MemStore) All() map[string]LogState {
 // SetSigner installs a cosignature key (over the provisioning channel).
 type Witness struct {
 	signer atomic.Pointer[torchwood.CosignatureSigner]
+	epoch  atomic.Uint64
 	store  Store
 
-	// mu serializes submissions; simplicity over throughput.
+	// mu serializes signer changes with batch signing and persistence.
 	mu sync.Mutex
+
+	poolMu       sync.Mutex
+	currentPool  *pool
+	inSequencing map[string]*poolEntry
 }
 
 func New(store Store) *Witness {
-	return &Witness{store: store}
+	return &Witness{store: store, currentPool: newPool()}
 }
 
 // SetSigner installs the witness cosignature key, bringing the witness up.
@@ -135,6 +148,7 @@ func (w *Witness) SetSigner(s *torchwood.CosignatureSigner) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.signer.Store(s)
+	w.epoch.Add(1)
 }
 
 // ClearSigner de-provisions the witness.
@@ -146,6 +160,7 @@ func (w *Witness) ClearSigner() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.signer.Store(nil)
+	w.epoch.Add(1)
 }
 
 // Provisioned reports whether a signer is installed.
@@ -214,6 +229,32 @@ type request struct {
 	old   int64
 	proof tlog.TreeProof
 	note  []byte // signed checkpoint note, verbatim
+}
+
+type candidate struct {
+	cp     torchwood.Checkpoint
+	text   []byte
+	signer *torchwood.CosignatureSigner
+	epoch  uint64
+}
+
+type result struct {
+	code int
+	resp []byte
+}
+
+type poolEntry struct {
+	candidate *candidate
+	done      chan struct{}
+	result    result
+}
+
+type pool struct {
+	entries map[string]*poolEntry
+}
+
+func newPool() *pool {
+	return &pool{entries: make(map[string]*poolEntry)}
 }
 
 func parseRequest(body []byte) (*request, error) {
@@ -300,14 +341,31 @@ func (w *Witness) AddCheckpoint(body []byte) (code int, resp []byte) {
 		return http.StatusBadRequest, nil
 	}
 
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	c := &candidate{cp: cp, text: bytes.Clone(text), signer: signer, epoch: w.epoch.Load()}
 
-	// Re-load under the lock: a deprovision zeroes the key material right
-	// after ClearSigner returns, so the signer loaded before the lock may
-	// already be cleared. Under w.mu the signer and its key are stable.
-	if signer = w.signer.Load(); signer == nil {
-		return http.StatusServiceUnavailable, []byte("witness key not provisioned\n")
+	w.poolMu.Lock()
+	entry, code, resp := w.addToPool(req, c)
+	w.poolMu.Unlock()
+	if entry == nil {
+		return code, resp
+	}
+
+	<-entry.done
+	return entry.result.code, entry.result.resp
+}
+
+// addToPool validates and admits a candidate. w.poolMu must be held.
+func (w *Witness) addToPool(req *request, c *candidate) (*poolEntry, int, []byte) {
+	cp := c.cp
+
+	if entry := w.currentPool.entries[cp.Origin]; entry != nil {
+		return w.matchPending(entry, c)
+	}
+	if entry := w.inSequencing[cp.Origin]; entry != nil {
+		return w.matchPending(entry, c)
+	}
+	if len(w.currentPool.entries) >= maxPoolSize {
+		return nil, http.StatusTooManyRequests, []byte("checkpoint pool full\n")
 	}
 
 	prev, known := w.store.Get(cp.Origin)
@@ -319,7 +377,7 @@ func (w *Witness) AddCheckpoint(body []byte) (code int, resp []byte) {
 
 	if req.old != latest {
 		resp := strconv.FormatInt(latest, 10) + "\n"
-		return http.StatusConflict, []byte(resp)
+		return nil, http.StatusConflict, []byte(resp)
 	}
 
 	// The consistency checks compare against the stored hash, never
@@ -327,49 +385,141 @@ func (w *Witness) AddCheckpoint(body []byte) (code int, resp []byte) {
 	switch {
 	case cp.N == 0:
 		if len(req.proof) != 0 || cp.Hash != emptyTreeHash {
-			return http.StatusUnprocessableEntity, nil
+			return nil, http.StatusUnprocessableEntity, nil
 		}
 	case req.old == cp.N:
 		if len(req.proof) != 0 || cp.Hash != prev.Hash {
-			return http.StatusUnprocessableEntity, nil
+			return nil, http.StatusUnprocessableEntity, nil
 		}
 	case req.old == 0:
 		// First sighting of this log: nothing to be consistent with.
 		if len(req.proof) != 0 {
-			return http.StatusUnprocessableEntity, nil
+			return nil, http.StatusUnprocessableEntity, nil
 		}
 	default:
 		if err := tlog.CheckTree(req.proof, cp.N, cp.Hash, req.old, prev.Hash); err != nil {
-			return http.StatusUnprocessableEntity, nil
+			return nil, http.StatusUnprocessableEntity, nil
 		}
 	}
 
-	signed, err := note.Sign(&note.Note{Text: string(text)}, signer)
-	if err != nil {
-		return http.StatusInternalServerError, nil
+	entry := &poolEntry{candidate: c, done: make(chan struct{})}
+	w.currentPool.entries[cp.Origin] = entry
+	return entry, 0, nil
+}
+
+func (w *Witness) matchPending(entry *poolEntry, c *candidate) (*poolEntry, int, []byte) {
+	pending := entry.candidate
+	if pending.signer == c.signer && pending.epoch == c.epoch && pending.cp.N == c.cp.N &&
+		pending.cp.Hash == c.cp.Hash && bytes.Equal(pending.text, c.text) {
+		return entry, 0, nil
 	}
 
-	// note.Sign output is `text + "\n" + sig-lines`. We slice past the
-	// separator to keep only the signature lines we just added.
-	cosig := signed[len(text)+1:]
+	prev, known := w.store.Get(c.cp.Origin)
+	var latest int64
+	if known {
+		latest = prev.Size
+	}
+	return nil, http.StatusConflict, []byte(strconv.FormatInt(latest, 10) + "\n")
+}
 
-	// The stored note is `signed` itself: checkpoint text + our
-	// cosignature. Submitted signature lines are unverified and never
-	// stored; persisting them would hand submitters most of the
-	// fixed-size state slot.
-	state := LogState{
-		Size: cp.N,
-		Hash: cp.Hash,
-		Note: signed,
+// RunSequencer commits one non-empty checkpoint pool per period.
+func (w *Witness) RunSequencer(ctx context.Context, period time.Duration) error {
+	ticker := time.NewTicker(period)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			w.stopPools()
+			return ctx.Err()
+		case <-ticker.C:
+			w.sequence()
+		}
+	}
+}
+
+func (w *Witness) sequence() {
+	w.poolMu.Lock()
+	p := w.currentPool
+	w.currentPool = newPool()
+	w.inSequencing = p.entries
+	w.poolMu.Unlock()
+
+	w.sequencePool(p)
+
+	w.poolMu.Lock()
+	w.inSequencing = nil
+	w.poolMu.Unlock()
+}
+
+func (w *Witness) sequencePool(p *pool) {
+	if len(p.entries) == 0 {
+		return
 	}
 
-	// The cosignature must not be released before the state it attests
-	// to is stored (and, on the device, persisted).
-	if err := w.store.PutBatch(map[string]LogState{cp.Origin: state}); err != nil {
-		return http.StatusInternalServerError, nil
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	signer := w.signer.Load()
+	epoch := w.epoch.Load()
+	if signer == nil {
+		w.finishPool(p, http.StatusServiceUnavailable, []byte("witness key not provisioned\n"))
+		return
+	}
+	if w.Halted() {
+		w.finishPool(p, http.StatusServiceUnavailable, []byte("witness halted: storage rollback or tamper detected\n"))
+		return
 	}
 
-	return http.StatusOK, cosig
+	states := make(map[string]LogState, len(p.entries))
+	signFailed := false
+	for origin, entry := range p.entries {
+		if entry.candidate.signer != signer || entry.candidate.epoch != epoch {
+			entry.result = result{http.StatusServiceUnavailable, []byte("witness key changed while checkpoint was pending\n")}
+			continue
+		}
+
+		signed, err := note.Sign(&note.Note{Text: string(entry.candidate.text)}, signer)
+		if err != nil {
+			entry.result = result{code: http.StatusInternalServerError}
+			signFailed = true
+			continue
+		}
+		entry.result = result{code: http.StatusOK, resp: signed[len(entry.candidate.text)+1:]}
+		states[origin] = LogState{
+			Size: entry.candidate.cp.N,
+			Hash: entry.candidate.cp.Hash,
+			Note: signed,
+		}
+	}
+	if signFailed {
+		w.finishPool(p, http.StatusInternalServerError, nil)
+		return
+	}
+
+	if len(states) != 0 {
+		if err := w.store.PutBatch(states); err != nil {
+			w.finishPool(p, http.StatusInternalServerError, nil)
+			return
+		}
+	}
+	for _, entry := range p.entries {
+		close(entry.done)
+	}
+}
+
+func (w *Witness) finishPool(p *pool, code int, resp []byte) {
+	for _, entry := range p.entries {
+		entry.result = result{code: code, resp: resp}
+		close(entry.done)
+	}
+}
+
+func (w *Witness) stopPools() {
+	w.poolMu.Lock()
+	defer w.poolMu.Unlock()
+	w.finishPool(w.currentPool, http.StatusServiceUnavailable, []byte("witness sequencer stopped\n"))
+	w.currentPool = newPool()
 }
 
 var emptyTreeHash = tlog.Hash(sha256.Sum256(nil))

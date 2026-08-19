@@ -2,6 +2,7 @@ package witness
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"filippo.io/torchwood"
 	"golang.org/x/mod/sumdb/note"
@@ -411,6 +413,137 @@ func TestStoreFailureWithholdsCosignature(t *testing.T) {
 	}
 }
 
+func TestPoolCommitsMultipleOriginsAsOneBatch(t *testing.T) {
+	store := &countStore{MemStore: NewMemStore()}
+	w, v := newTestWitnessWithStore(t, store)
+
+	logA := newTestLog(t, "a.vitrum.invalid/log")
+	logA.Append("a")
+	logB := newTestLog(t, "b.vitrum.invalid/log")
+	logB.Append("b")
+	noteA, noteB := mustCheckpoint(t, logA), mustCheckpoint(t, logB)
+
+	type response struct {
+		code int
+		body []byte
+		note []byte
+	}
+	responses := make(chan response, 2)
+	for _, cpNote := range [][]byte{noteA, noteB} {
+		go func() {
+			code, body := w.AddCheckpoint(EncodeAddCheckpoint(0, nil, cpNote))
+			responses <- response{code, body, cpNote}
+		}()
+	}
+	waitForPoolSize(t, w, 2)
+	w.sequence()
+
+	for range 2 {
+		resp := <-responses
+		if resp.code != http.StatusOK {
+			t.Fatalf("AddCheckpoint = %d (%q), want 200", resp.code, resp.body)
+		}
+		verifyCosig(t, v, resp.note, resp.body)
+	}
+	if store.batches != 1 || store.entries != 2 {
+		t.Fatalf("store commits = %d batches, %d entries; want 1 batch, 2 entries", store.batches, store.entries)
+	}
+
+	w.sequence()
+	if store.batches != 1 {
+		t.Fatalf("empty sequence committed another batch: %d", store.batches)
+	}
+}
+
+func TestPoolDeduplicatesPendingCheckpoint(t *testing.T) {
+	store := &countStore{MemStore: NewMemStore()}
+	w, _ := newTestWitnessWithStore(t, store)
+	l := newTestLog(t, testOrigin)
+	l.Append("a")
+	body := EncodeAddCheckpoint(0, nil, mustCheckpoint(t, l))
+
+	responses := make(chan result, 2)
+	for range 2 {
+		go func() {
+			code, resp := w.AddCheckpoint(body)
+			responses <- result{code, resp}
+		}()
+	}
+	waitForPoolSize(t, w, 1)
+	w.sequence()
+
+	a, b := <-responses, <-responses
+	if a.code != http.StatusOK || b.code != http.StatusOK || !bytes.Equal(a.resp, b.resp) {
+		t.Fatalf("duplicate results = (%d, %q), (%d, %q)", a.code, a.resp, b.code, b.resp)
+	}
+	if store.batches != 1 || store.entries != 1 {
+		t.Fatalf("store commits = %d batches, %d entries; want 1 batch, 1 entry", store.batches, store.entries)
+	}
+}
+
+func TestPoolRefusesDifferentCheckpointForPendingOrigin(t *testing.T) {
+	w, _ := newTestWitnessWithStore(t, NewMemStore())
+	l := newTestLog(t, testOrigin)
+	l.Append("a")
+	first := EncodeAddCheckpoint(0, nil, mustCheckpoint(t, l))
+	l.Append("b")
+	second := EncodeAddCheckpoint(0, nil, mustCheckpoint(t, l))
+
+	done := make(chan struct{})
+	go func() {
+		w.AddCheckpoint(first)
+		close(done)
+	}()
+	waitForPoolSize(t, w, 1)
+	if code, resp := w.AddCheckpoint(second); code != http.StatusConflict || string(resp) != "0\n" {
+		t.Fatalf("second checkpoint = %d (%q), want 409 (0)", code, resp)
+	}
+	w.sequence()
+	<-done
+}
+
+type countStore struct {
+	*MemStore
+	batches int
+	entries int
+}
+
+func (s *countStore) PutBatch(states map[string]LogState) error {
+	s.batches++
+	s.entries += len(states)
+	return s.MemStore.PutBatch(states)
+}
+
+func newTestWitnessWithStore(t *testing.T, store Store) (*Witness, *torchwood.CosignatureVerifier) {
+	t.Helper()
+	seed := make([]byte, ed25519.SeedSize)
+	if _, err := rand.Read(seed); err != nil {
+		t.Fatal(err)
+	}
+	signer, err := torchwood.NewCosignatureSigner(testWitnessName, ed25519.NewKeyFromSeed(seed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := New(store)
+	w.SetSigner(signer)
+	return w, signer.Verifier()
+}
+
+func waitForPoolSize(t *testing.T, w *Witness, size int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		w.poolMu.Lock()
+		got := len(w.currentPool.entries)
+		w.poolMu.Unlock()
+		if got == size {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("checkpoint pool did not reach size %d", size)
+}
+
 // TestConcurrentSubmitAndProvisionChurn fans submissions in against
 // provision/deprovision churn (run with -race to check the signer
 // lifecycle). Every response must be a clean protocol outcome; the signer
@@ -431,6 +564,7 @@ func TestConcurrentSubmitAndProvisionChurn(t *testing.T) {
 
 	w := New(NewMemStore())
 	w.SetSigner(signer)
+	runTestSequencer(t, w)
 
 	cpNote := mustCheckpoint(t, l)
 	body := EncodeAddCheckpoint(0, nil, cpNote)
@@ -596,22 +730,17 @@ func mustSignAs(t *testing.T, l *testlog.Log, over *testlog.Log, size int64) []b
 
 func newTestWitness(t *testing.T) (*Witness, *torchwood.CosignatureVerifier) {
 	t.Helper()
+	w, verifier := newTestWitnessWithStore(t, NewMemStore())
+	runTestSequencer(t, w)
 
-	seed := make([]byte, ed25519.SeedSize)
-	if _, err := rand.Read(seed); err != nil {
-		t.Fatal(err)
-	}
+	return w, verifier
+}
 
-	signer, err := torchwood.NewCosignatureSigner(
-		testWitnessName, ed25519.NewKeyFromSeed(seed))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	w := New(NewMemStore())
-	w.SetSigner(signer)
-
-	return w, signer.Verifier()
+func runTestSequencer(t *testing.T, w *Witness) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go w.RunSequencer(ctx, time.Millisecond)
 }
 
 // mustCosign submits and asserts 200, returning the cosignature lines.

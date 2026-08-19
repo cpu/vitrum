@@ -2,9 +2,11 @@ package state
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"net/http"
 	"testing"
+	"time"
 
 	"filippo.io/torchwood"
 	"golang.org/x/mod/sumdb/tlog"
@@ -48,6 +50,9 @@ func TestRollbackAttackRefusedEndToEnd(t *testing.T) {
 		}
 		w := witness.New(s)
 		w.SetSigner(wsigner)
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		go w.RunSequencer(ctx, time.Millisecond)
 		return w
 	}
 
