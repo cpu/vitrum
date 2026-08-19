@@ -48,14 +48,15 @@ GOENV := GOOS=tamago GOOSPKG=$(GOOSPKG) GOARM=7 GOARCH=arm
 # the app to define its own `//go:linkname ramSize` variable. That's
 # useful once we need a DMA reservation; until then the board defaults
 # (512MB) are what we want.
-GOFLAGS := -tags $(TARGET),gvisor,native -trimpath -buildvcs=false \
+comma := ,
+GOFLAGS := -tags $(TARGET),gvisor,native$(if $(EXTRA_TAGS),$(comma)$(EXTRA_TAGS)) -trimpath -buildvcs=false \
            -ldflags "-s -w -T $(TEXT_START) -R 0x1000 -X main.revision=$(REVISION)"
 
 QEMU ?= qemu-system-arm -machine mcimx6ul-evk -cpu cortex-a7 -m 512M \
         -nographic -monitor none -semihosting \
         -serial $(UART1) -serial $(UART2) -net $(NET)
 
-.PHONY: all elf imx imx_signed qemu qemu-build repro test staticcheck govulncheck e2e e2e-live clean check_tamago check_hab_keys
+.PHONY: all elf imx imx_signed rpmb_provision rpmb_provision_signed qemu qemu-build repro test staticcheck govulncheck e2e e2e-live clean check_tamago check_hab_keys
 
 all: elf
 
@@ -163,6 +164,12 @@ $(ELF)-signed.imx: check_tamago check_hab_keys $(ELF).imx
 	@echo "Flashing / fuse burning is a documented, human-only step; see PRODUCTION_SETUP.md."
 
 imx_signed: $(ELF)-signed.imx
+
+rpmb_provision:
+	$(MAKE) imx APP=vitrum-rpmb-provision TARGET=usbarmory EXTRA_TAGS=rpmbprovision
+
+rpmb_provision_signed:
+	$(MAKE) imx_signed APP=vitrum-rpmb-provision TARGET=usbarmory EXTRA_TAGS=rpmbprovision
 
 ifeq ($(TARGET),mx6ullevk)
 # qemu-build exists so the e2e scripts can build in the foreground (the
