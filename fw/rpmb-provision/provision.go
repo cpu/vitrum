@@ -9,6 +9,7 @@ import (
 )
 
 type rpmbProvisionStatus struct {
+	Revision             string     `json:"revision"`
 	HAB                  hab.Status `json:"hab"`
 	SNVSSecure           bool       `json:"snvs_secure"`
 	UnprogrammedBefore   bool       `json:"unprogrammed_before"`

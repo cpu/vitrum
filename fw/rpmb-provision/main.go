@@ -20,6 +20,8 @@ import (
 	"github.com/cpu/vitrum/fw/internal/hab"
 )
 
+var revision = "unknown"
+
 func main() {
 	log.SetFlags(0)
 	log.SetOutput(io.MultiWriter(os.Stderr, &logz))
@@ -29,7 +31,7 @@ func main() {
 	boot := hab.Report()
 	secure := imx6ul.SNVS != nil && imx6ul.SNVS.Available()
 	if err := usbarmory.MMC.Detect(); err != nil {
-		serveProvisionStatus(rpmbProvisionStatus{HAB: boot, SNVSSecure: secure, Error: fmt.Sprintf("eMMC detect: %v", err)})
+		serveProvisionStatus(rpmbProvisionStatus{Revision: revision, HAB: boot, SNVSSecure: secure, Error: fmt.Sprintf("eMMC detect: %v", err)})
 	}
 	card := &rpmbCard{card: usbarmory.MMC}
 	status := provisionRPMB(card, secure, boot, func() ([]byte, error) {
@@ -39,6 +41,7 @@ func main() {
 		}
 		return key, err
 	})
+	status.Revision = revision
 	log.Printf("RPMB probe: %s", status.Probe)
 	serveProvisionStatus(status)
 }
