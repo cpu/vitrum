@@ -14,11 +14,24 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/usbarmory/tamago/soc/nxp/imx6ul"
+
 	"github.com/cpu/vitrum/internal/state"
 	"github.com/cpu/vitrum/internal/witness"
 )
 
-var start = time.Now()
+var (
+	start        = time.Now()
+	startCounter = rawCounterTime()
+)
+
+func rawCounterTime() int64 {
+	return int64(float64(imx6ul.ARM.Counter()) * imx6ul.ARM.TimerMultiplier)
+}
+
+func uptime() time.Duration {
+	return time.Duration(rawCounterTime() - startCounter)
+}
 
 // storage bundles the rollback-protected persistence layer a target provides.
 // A nil dev means no persistence (RAM-only, e.g. QEMU).
@@ -128,7 +141,7 @@ func handler(w *witness.Witness, persistence string) http.Handler {
 			"witness_key": w.Verifier(),
 			"persistence": persistence,
 			"time":        time.Now().UTC().Format(time.RFC3339),
-			"uptime":      time.Since(start).String(),
+			"uptime":      uptime().String(),
 			"logs":        sizes,
 			"sequencer": map[string]any{
 				"running":           status.SequencerRunning,
