@@ -31,7 +31,7 @@ vector and any firmware derives the same keys; such boots are marked DEV
 
 ## Invariant
 
-> A cosignature for state generation `g` is released to a client only after
+> Every cosignature for state generation `g` is released to a client only after
 > both (1) the blob at generation `g` is durably on the microSD, and (2) the
 > RPMB anchor reads `g`.
 
@@ -41,17 +41,19 @@ back) and must be refused.
 
 ## Update sequence (state machine)
 
-For an accepted, consistency-checked new checkpoint that advances the store
-from generation `n` to `n+1`:
+Every 200 ms, the witness rotates its pending checkpoint pool. A non-empty
+pool contains at most one checkpoint per origin and advances the store from
+generation `n` to `n+1` as one batch:
 
 ```
-S0  verified   - new checkpoint passed all consistency checks (witness core),
-                 in-RAM state now reflects generation n+1, nothing persisted.
+S0  verified   - all checkpoints passed consistency checks (witness core),
+                 committed in-RAM state still reflects generation n.
 S1  blob-written - encrypted+authenticated blob for generation n+1 written to
                  the next A/B slot and flushed. RPMB still reads n.
 S2  rpmb-anchored - authenticated RPMB write of (n+1) done; RPMB counter and
                  anchor now read n+1. Fully committed.
-S3  released   - cosignature returned to the client.
+S3  released   - all batch cosignatures returned to their clients and the
+                 committed in-RAM state advances to n+1.
 ```
 
 Order is fixed: S1 before S2 before S3. The cosignature (S3) never leaves
@@ -64,9 +66,9 @@ generation of the newest *valid* (decrypts + authenticates) microSD slot.
 
 | Crash point | On-disk result | Boot observes | Recovery |
 |---|---|---|---|
-| before S1 | blob=n, rpmb=n | `g_blob == g_rpmb` | normal: serve at n. The in-RAM n+1 was never released; the client sees no cosignature and resubmits. |
-| between S1 and S2 | blob=n+1, rpmb=n | `g_blob == g_rpmb + 1` | **benign off-by-one.** The blob is one ahead but its generation was never anchored, so no cosignature for n+1 escaped (S3 not reached). Re-anchor: write n+1 to RPMB, then serve at n+1. Safe because the blob is authenticated; the adversary cannot have substituted a forged n+1. |
-| between S2 and S3 | blob=n+1, rpmb=n+1 | `g_blob == g_rpmb` | normal: serve at n+1. The cosignature may or may not have reached the client; if not, the client resubmits and gets the same (idempotent) cosignature. |
+| before S1 | blob=n, rpmb=n | `g_blob == g_rpmb` | normal: serve at n. The clients see no cosignatures and resubmit. |
+| between S1 and S2 | blob=n+1, rpmb=n | `g_blob == g_rpmb + 1` | **benign off-by-one.** The blob is one ahead but its generation was never anchored, so no batch cosignatures escaped (S3 not reached). Re-anchor: write n+1 to RPMB, then serve at n+1. Safe because the blob is authenticated; the adversary cannot have substituted a forged n+1. |
+| between S2 and S3 | blob=n+1, rpmb=n+1 | `g_blob == g_rpmb` | normal: serve at n+1. Some responses may not have reached their clients; those clients resubmit idempotently. |
 | after S3 | blob=n+1, rpmb=n+1 | `g_blob == g_rpmb` | normal. |
 
 ### Soft failures (I/O error, firmware keeps running)
@@ -141,5 +143,8 @@ HALT means refusing every add-checkpoint.
 
 ## Counter budget
 
-The RPMB write counter is uint32: 2³² increments ≈ 136 years at one write per
-second. One increment per committed checkpoint is comfortably within budget.
+The RPMB write counter is uint32. A non-empty checkpoint pool consumes one
+increment, regardless of how many origins it contains; empty periods consume
+none. The 200 ms period caps sustained use at five increments per second, so
+2³² increments last about 27 years at the absolute maximum continuous rate
+(or about 136 years at one increment per second).

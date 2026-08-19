@@ -24,7 +24,8 @@ The armory firmware is responsible for:
 
 - **Consistency.** Same-size resubmissions must match the stored hash.
   Growth needs a consistency proof against it. The witness never endorses
-  two conflicting views of the same origin.
+  two conflicting views of the same origin. A pending batch admits at most
+  one distinct checkpoint per origin.
 - **Rollback protection.** State is an encrypted, authenticated blob
   anchored to a hardware-monotonic counter
   (See [`internal/state/ROLLBACK.md`](internal/state/ROLLBACK.md)). Restoring 
@@ -63,4 +64,6 @@ creates a permanent storage entry, and checkpoint text is submitter-controlled
 up to the 64 KiB request limit.
 
 Garbage origins or one inflated entry can fill the 64 KiB slot, at which
-point commits fail (500) while already-cosigned state keeps serving.
+point the whole batch fails (500) while already-cosigned state keeps serving.
+Each 200 ms pool accepts at most 256 distinct origins; excess submissions get
+429 until the next pool.

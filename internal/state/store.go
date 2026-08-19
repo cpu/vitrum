@@ -183,8 +183,8 @@ func (s *RollbackStore) PutBatch(updates map[string]witness.LogState) error {
 	}
 
 	if s.gen == ^uint32(0) {
-		// The anchor counter is exhausted (~136 years at 1 write/s). Halt
-		// rather than wrap, which would break monotonicity.
+		// The anchor counter is exhausted. Halt rather than wrap, which
+		// would break monotonicity.
 		s.halt("generation counter exhausted")
 		return ErrHalted
 	}

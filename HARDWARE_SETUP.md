@@ -113,6 +113,6 @@ The device trusts this host for everything except split views
 |---|---|
 | blue blinking | up, unprovisioned (submissions get 503) |
 | blue solid | provisioned and serving |
-| white pulse | a checkpoint was cosigned |
+| white pulse | one or more checkpoints were cosigned |
 | blue + white together | store halted (rollback/tamper) |
 | blue/white alternating | fatal error |
