@@ -205,10 +205,9 @@ Two signed images are required:
 - the normal production vitrum image; and
 - a minimal RPMB provisioning image used exactly once after HAB closure.
 
-The RPMB provisioning image is not implemented yet. It must be built and
-signed through a dedicated Make target before this runbook can be executed.
-Do not substitute normal vitrum: on a closed unit it deliberately fails before
-starting the network when RPMB is unprogrammed.
+Do not substitute normal vitrum for the dedicated provisioner: on a closed
+unit normal vitrum deliberately fails before starting the network when RPMB is
+unprogrammed.
 
 Build the production image:
 
@@ -224,9 +223,23 @@ sha256sum out/vitrum-usbarmory.imx out/vitrum-usbarmory.csf \
   out/vitrum-usbarmory-signed.imx
 ```
 
-Archive the signed image, its three digests, the source commit, the Crucible
-revision, and the key manifest together. Once implemented, apply the same
-artifact checks and archival rules to the signed RPMB provisioning image.
+Build and inspect the one-off provisioner with the same keys and SRK index:
+
+```bash
+make rpmb_provision_signed HAB_KEYS="$HAB_KEYS" HAB_SRK_INDEX=1
+
+test -s out/vitrum-rpmb-provision-usbarmory.imx
+test -s out/vitrum-rpmb-provision-usbarmory.csf
+test -s out/vitrum-rpmb-provision-usbarmory-signed.imx
+test "$(stat -c %s out/vitrum-rpmb-provision-usbarmory-signed.imx)" -eq \
+     "$(( $(stat -c %s out/vitrum-rpmb-provision-usbarmory.imx) + $(stat -c %s out/vitrum-rpmb-provision-usbarmory.csf) ))"
+sha256sum out/vitrum-rpmb-provision-usbarmory.imx \
+  out/vitrum-rpmb-provision-usbarmory.csf \
+  out/vitrum-rpmb-provision-usbarmory-signed.imx
+```
+
+Archive both signed images, their component digests, the source commit, the
+Crucible revision, and the key manifest together.
 
 ## 4. Boot the signed image while HAB is open
 
@@ -270,9 +283,9 @@ program RPMB. Verify afterward that normal vitrum still reports RAM-only
 storage.
 
 An instrumented substitute does not satisfy these gates: different image
-bytes can have different HAB layout or signing failures. The current firmware
-does not expose the required HAB ROM status and event APIs, so this section is
-an implementation blocker.
+bytes can have different HAB layout or signing failures. Normal vitrum reports
+the ROM status and raw events in the `hab` object returned by `/healthz`. The
+provisioner returns the same object from `/healthz` and `/status`.
 
 ## 5. Prepare the fuse session
 
@@ -503,11 +516,6 @@ does not replace checking HAB events during development.
 
 ## 9. Program the RPMB authentication key
 
-> [!IMPORTANT]
-> This section specifies required behavior, not commands that work today. The
-> signed RPMB provisioning firmware must be implemented and tested before any
-> physical fuse session begins.
-
 Crucible cannot perform this step. It manages SoC OTP fuses, while RPMB is a
 special eMMC partition using authenticated JEDEC request frames. Factory Linux
 also cannot provide the key before closure: until a cold boot after
@@ -537,6 +545,17 @@ continuing:
 - RPMB was conclusively unprogrammed before the write;
 - key programming reported success; and
 - an authenticated counter read with the same derived key succeeded.
+
+Fetch the machine-readable result from the directly connected host:
+
+```bash
+curl --fail --show-error http://10.0.0.1/status
+```
+
+Require `success`, `snvs_secure`, `unprogrammed_before`, `key_programmed`, and
+`authenticated_counter` all to be `true`. Both LEDs remain solid on success;
+alternating blue and white indicates refusal or failure. `/logz` contains the
+corresponding diagnostic without key material.
 
 Any other result is terminal for this run. Do not retry programming and do not
 boot normal vitrum to see whether it happens to work.
