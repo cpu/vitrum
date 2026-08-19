@@ -65,5 +65,5 @@ up to the 64 KiB request limit.
 
 Garbage origins or one inflated entry can fill the 64 KiB slot, at which
 point the whole batch fails (500) while already-cosigned state keeps serving.
-Each 200 ms pool accepts at most 256 distinct origins; excess submissions get
-429 until the next pool.
+Each pool accepts at most 256 distinct origins and is rotated by a sequencer
+with a 200 ms period; excess submissions get 429 until the next pool.

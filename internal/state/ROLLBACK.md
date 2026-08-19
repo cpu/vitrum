@@ -41,9 +41,9 @@ back) and must be refused.
 
 ## Update sequence (state machine)
 
-Every 200 ms, the witness rotates its pending checkpoint pool. A non-empty
-pool contains at most one checkpoint per origin and advances the store from
-generation `n` to `n+1` as one batch:
+The witness sequencer runs with a 200 ms period and rotates its pending
+checkpoint pool on each pass. A non-empty pool contains at most one checkpoint
+per origin and advances the store from generation `n` to `n+1` as one batch:
 
 ```
 S0  verified   - all checkpoints passed consistency checks (witness core),
@@ -145,6 +145,8 @@ HALT means refusing every add-checkpoint.
 
 The RPMB write counter is uint32. A non-empty checkpoint pool consumes one
 increment, regardless of how many origins it contains; empty periods consume
-none. The 200 ms period caps sustained use at five increments per second, so
-2³² increments last about 27 years at the absolute maximum continuous rate
-(or about 136 years at one increment per second).
+none. The 200 ms sequencing period caps sustained scheduling at five commits
+per second, so 2³² increments last about 27 years at the absolute maximum
+continuous rate (or about 136 years at one increment per second). A slow pass
+can be followed immediately by a pending ticker event; the period is not a
+minimum delay between individual writes.

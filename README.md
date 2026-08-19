@@ -15,8 +15,9 @@ to enforce this property:
   with no read-back path.
 - storage and SSH host keys are derived from the SoC's hardware-unique key.
 
-Accepted checkpoints are pooled for up to 200 ms and committed as one storage
-generation, consuming one RPMB counter increment per non-empty batch.
+The checkpoint sequencer runs with a 200 ms period. Checkpoints pending at each
+sequencing pass are committed as one storage generation, consuming one RPMB
+counter increment per non-empty batch.
 
 Witness submissions and SSH provisioning are unauthenticated. The firmware
 contains no origin allowlist or log keys, so adding a log requires no firmware
