@@ -21,6 +21,7 @@ import (
 )
 
 var (
+	revision     = "unknown"
 	start        = time.Now()
 	startCounter = rawCounterTime()
 )
@@ -142,6 +143,7 @@ func handler(w *witness.Witness, persistence string) http.Handler {
 			"persistence": persistence,
 			"time":        time.Now().UTC().Format(time.RFC3339),
 			"uptime":      uptime().String(),
+			"revision":    revision,
 			"logs":        sizes,
 			"sequencer": map[string]any{
 				"running":           status.SequencerRunning,

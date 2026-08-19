@@ -8,6 +8,7 @@ OUT ?= out
 TEXT_START := 0x80010000 # ramStart (mem.go in tamago soc/nxp/imx6ul) + 0x10000
 GOOSPKG ?= github.com/usbarmory/tamago
 TAMAGO ?= $(shell go tool -n github.com/usbarmory/tamago/cmd/tamago)
+REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 
 # Persistence slots live at a 16 MiB offset on the microSD.
 # The boot image (written at 1 KiB) must never grow into them.
@@ -48,7 +49,7 @@ GOENV := GOOS=tamago GOOSPKG=$(GOOSPKG) GOARM=7 GOARCH=arm
 # useful once we need a DMA reservation; until then the board defaults
 # (512MB) are what we want.
 GOFLAGS := -tags $(TARGET),gvisor,native -trimpath -buildvcs=false \
-           -ldflags "-s -w -T $(TEXT_START) -R 0x1000"
+           -ldflags "-s -w -T $(TEXT_START) -R 0x1000 -X main.revision=$(REVISION)"
 
 QEMU ?= qemu-system-arm -machine mcimx6ul-evk -cpu cortex-a7 -m 512M \
         -nographic -monitor none -semihosting \
