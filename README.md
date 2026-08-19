@@ -32,6 +32,7 @@ The `Makefile` provides these targets:
 
     make test         # run host-side unit tests
     make staticcheck  # run the pinned static analyzer
+    make govulncheck  # scan reachable code for known vulnerabilities
     make qemu         # build & boot the emulated target (TARGET=mx6ullevk)
     make e2e          # test full provisioning + witness flow under QEMU
     make e2e-live     # feed a live log (keyserver.geomys.org) through QEMU
