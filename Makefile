@@ -121,6 +121,7 @@ $(ELF).imx: $(ELF).bin $(ELF).dcd
 # HAB_KEYS must point at a directory holding the CSF/IMG key+cert pairs and the
 # SRK table. SRK index selected with HAB_SRK_INDEX (default 1).
 HAB_SRK_INDEX ?= 1
+CRUCIBLE_VERSION := v0.0.0-20260105222051-0bd71c72232c
 
 check_hab_keys:
 	@if [ "$(HAB_KEYS)" == "" ]; then \
@@ -128,9 +129,18 @@ check_hab_keys:
 		echo 'See SECURE_BOOT.md (generate them with habtool; do NOT burn fuses).'; \
 		exit 1; \
 	fi
+	@for file in \
+		CSF_$(HAB_SRK_INDEX)_key.pem CSF_$(HAB_SRK_INDEX)_crt.pem \
+		IMG_$(HAB_SRK_INDEX)_key.pem IMG_$(HAB_SRK_INDEX)_crt.pem \
+		SRK_1_2_3_4_table.bin; do \
+		if [ ! -s "$(HAB_KEYS)/$$file" ]; then \
+			echo "missing or empty HAB file: $(HAB_KEYS)/$$file"; \
+			exit 1; \
+		fi; \
+	done
 
 $(ELF)-signed.imx: check_tamago check_hab_keys $(ELF).imx
-	$(TAMAGO) install github.com/usbarmory/crucible/cmd/habtool@latest
+	$(TAMAGO) install github.com/usbarmory/crucible/cmd/habtool@$(CRUCIBLE_VERSION)
 	$(shell $(TAMAGO) env GOPATH)/bin/habtool \
 		-A $(HAB_KEYS)/CSF_$(HAB_SRK_INDEX)_key.pem \
 		-a $(HAB_KEYS)/CSF_$(HAB_SRK_INDEX)_crt.pem \
