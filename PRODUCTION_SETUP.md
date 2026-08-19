@@ -8,7 +8,9 @@ follows the [USB armory Mk II secure-boot guide][upstream] and uses its
 
 > [!WARNING]
 > This procedure has not yet completed a physical test run in this project.
-> Use sacrificial hardware first. OTP fuse writes cannot be undone.
+> There is no spare unit: the first fuse session is the production ceremony.
+> Complete every pre-fuse rehearsal and stop on any discrepancy. OTP fuse
+> writes cannot be undone.
 
 > [!WARNING]
 > The eMMC RPMB authentication key can be programmed only once. It must be
@@ -29,8 +31,14 @@ changes HAB from open mode, which records authentication failures but may
 continue booting, to closed mode, which rejects unauthenticated images.
 
 The SRK hash, its lock, key-revocation bits, `SEC_CONFIG`, the hardening fuses
-below, and the eMMC RPMB authentication key are one-time-programmable. Writing
-an image to microSD is destructive to that card but is not an OTP operation.
+below, and the eMMC RPMB authentication key are one-time-programmable. The
+device-key derivation is also a permanent compatibility contract once RPMB or
+state is written: DCP `DeriveKey`, the `"vitrum-rpmb-v1"` and
+`"vitrum-state-v1"` diversifiers, the SoC Unique ID salt, and
+PBKDF2-HMAC-SHA256 with 4096 iterations must not change. A changed RPMB key
+cannot authenticate the eMMC; a changed state key cannot decrypt the state
+blob. Writing an image to microSD is destructive to that card but is not an
+OTP operation.
 
 The CSF and IMG certificates are both signed by the selected SRK CA. The CSF
 key authenticates HAB commands; the IMG key authenticates the image data.
@@ -43,26 +51,57 @@ key authenticates HAB commands; the IMG key authenticates the image data.
   `crucible` runs there as root with `nvmem-imx-ocotp` loaded.
 - Use a dedicated microSD card and identify its whole-device path exactly.
 - Build from a clean, reviewed commit in `nix develop`.
-- Do not begin the fuse session until the signed RPMB provisioning firmware
-  described in section 9 is implemented, reviewed, and tested on sacrificial
-  hardware.
+- The RPMB provisioning firmware described in section 9 is implemented and
+  host-tested but has not run on physical hardware. Do not begin the fuse
+  session unless that first-use risk is accepted.
 - Both production vitrum and the RPMB provisioner must report HAB ROM status
-  and events for their own current boot. Do not begin the fuse session until
-  that reporting is implemented and the section 4 checks pass for both exact
-  signed artifacts.
+  and events for their own current boot. Do not begin the fuse session unless
+  the section 4 checks pass for both exact signed artifacts.
 - Store the HAB directory on encrypted offline-capable storage. Make two
   verified backups before locking any fuse.
 - Read the entire runbook before starting. Record every command, output,
   artifact digest, device serial number, and fuse read-back.
 
-Set these shell variables once. Replace both paths; never paste the example
-device path unchanged.
+Set these shell variables once. Replace the placeholder paths and interface;
+never paste the example device path unchanged.
 
 ```bash
 export HAB_KEYS=/secure/vitrum-hab-keys
 export ARMORY_CARD=/dev/sdX
+export ARMORY_SSH=root@10.0.0.1
+export ARMORY_KNOWN_HOSTS=/secure/usbarmory-factory-known_hosts
 test -b "$ARMORY_CARD"
 ```
+
+### Establish the trusted factory connection
+
+Before section 0, boot factory Linux from eMMC and connect it directly to the
+protected host. Keep this USB network isolated and unbridged. Identify the
+new USB network interface; do not copy the example name blindly:
+
+```bash
+export ARMORY_IF=usb0
+sudo ip link set "$ARMORY_IF" up
+sudo ip addr replace 10.0.0.2/24 dev "$ARMORY_IF"
+ping -c 3 10.0.0.1
+```
+
+The physical, isolated connection is the trust basis for this first contact.
+Create the factory Linux pin once, record its fingerprint in the ceremony
+log, and verify that strict reuse works:
+
+```bash
+install -m 600 /dev/null "$ARMORY_KNOWN_HOSTS"
+ssh-keyscan -H 10.0.0.1 >>"$ARMORY_KNOWN_HOSTS"
+ssh-keygen -lf "$ARMORY_KNOWN_HOSTS"
+ssh -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile="$ARMORY_KNOWN_HOSTS" "$ARMORY_SSH" true
+```
+
+If the protected host cannot guarantee that isolated first contact, obtain
+and verify the factory host-key fingerprint through a separate trusted
+channel before continuing. Do not enable forwarding or connection sharing;
+neither factory Linux nor vitrum needs Internet access during the ceremony.
 
 ## Boot-media selection
 
@@ -96,17 +135,32 @@ sudo dd if=out/vitrum-usbarmory.imx of="$ARMORY_CARD" \
 ```
 
 Power off, move the switch toward the microSD slot, and boot vitrum. Check
-`http://10.0.0.1/healthz`. On an unfused unit, key derivation is marked DEV
-because the SoC uses a non-unique test key. An unprogrammed RPMB causes storage
-to degrade to RAM-only.
+`http://10.0.0.1/healthz`. Require `target=usbarmory`, `snvs_secure=false`,
+`dev=true`, and `hab.config=open`, `hab.state=nonsecure`. Record the complete
+`hab` object from this unsigned image as a control for the ROM-reporting path.
+An unprogrammed RPMB causes storage to degrade to RAM-only.
 
-Smoke-test provisioning, `vitrum selftest`, and checkpoint submission, but
-treat all identities and pins from this phase as disposable. Remove the DEV
-SSH host-key pin before post-close provisioning:
+Check `/logz`. Require the device-key warning and the SSH host-key source to
+be marked DEV, and require the RPMB probe failure to contain exactly
+`result 0x7` (authentication key not yet programmed). Any other RPMB error is
+a transport or protocol failure that must be resolved before fusing.
+
+Smoke-test provisioning and checkpoint submission using a throwaway directory
+so no key or pin from unsigned firmware can become the production identity:
 
 ```bash
-rm -f keys/ssh_host.pub
+DEV_KEYS=$(mktemp -d)
+go run ./cmd/vitrum keygen \
+  -seed "$DEV_KEYS/witness.seed" -vkey "$DEV_KEYS/witness.vkey"
+go run ./cmd/vitrum provision -tofu \
+  -seed "$DEV_KEYS/witness.seed" -hostkey "$DEV_KEYS/ssh_host.pub"
+go run ./cmd/vitrum selftest -witness http://10.0.0.1
+rm -rf "$DEV_KEYS"
+unset DEV_KEYS
 ```
+
+Confirm that `keys/witness.seed` and `keys/ssh_host.pub` were not created by
+this DEV-phase test.
 
 Power off and move the switch toward eMMC before continuing.
 
@@ -136,12 +190,10 @@ sha256sum "$CRUCIBLE_ARM"
 ```
 
 Require `file` to identify a 32-bit ARM Linux executable. Using the factory
-Linux SSH identity established for section 5, copy the binary to a temporary
-path, compare its digest, then install it as root:
+Linux SSH identity established before section 0, copy the binary to a
+temporary path, compare its digest, then install it as root:
 
 ```bash
-export ARMORY_SSH=root@10.0.0.1
-export ARMORY_KNOWN_HOSTS=/secure/usbarmory-factory-known_hosts
 scp -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$ARMORY_KNOWN_HOSTS" \
   "$CRUCIBLE_ARM" "$ARMORY_SSH:/root/crucible"
@@ -209,10 +261,26 @@ Do not substitute normal vitrum for the dedicated provisioner: on a closed
 unit normal vitrum deliberately fails before starting the network when RPMB is
 unprogrammed.
 
+Require a clean tree, record its revision, and reproduce each unsigned image
+before signing it:
+
+```bash
+test -z "$(git status --porcelain)"
+SOURCE_REVISION=$(git rev-parse HEAD)
+make repro TARGET=usbarmory
+make repro APP=vitrum-rpmb-provision FWPKG=./fw/rpmb-provision \
+  TARGET=usbarmory
+```
+
+The signed targets run the pinned `tamago install habtool@...` command on every
+invocation. Prove that its module and checksum cache are warm by building with
+module downloads disabled. Stop if either offline build fails.
+
 Build the production image:
 
 ```bash
-make imx_signed TARGET=usbarmory HAB_KEYS="$HAB_KEYS" HAB_SRK_INDEX=1
+GOPROXY=off make imx_signed TARGET=usbarmory \
+  HAB_KEYS="$HAB_KEYS" HAB_SRK_INDEX=1
 
 test -s out/vitrum-usbarmory.imx
 test -s out/vitrum-usbarmory.csf
@@ -226,20 +294,63 @@ sha256sum out/vitrum-usbarmory.imx out/vitrum-usbarmory.csf \
 Build and inspect the one-off provisioner with the same keys and SRK index:
 
 ```bash
-make rpmb_provision_signed HAB_KEYS="$HAB_KEYS" HAB_SRK_INDEX=1
+GOPROXY=off make rpmb_provision_signed \
+  HAB_KEYS="$HAB_KEYS" HAB_SRK_INDEX=1
 
 test -s out/vitrum-rpmb-provision-usbarmory.imx
 test -s out/vitrum-rpmb-provision-usbarmory.csf
 test -s out/vitrum-rpmb-provision-usbarmory-signed.imx
+RPMB_IMX_SIZE=$(stat -c %s out/vitrum-rpmb-provision-usbarmory.imx)
+RPMB_CSF_SIZE=$(stat -c %s out/vitrum-rpmb-provision-usbarmory.csf)
 test "$(stat -c %s out/vitrum-rpmb-provision-usbarmory-signed.imx)" -eq \
-     "$(( $(stat -c %s out/vitrum-rpmb-provision-usbarmory.imx) + $(stat -c %s out/vitrum-rpmb-provision-usbarmory.csf) ))"
+  "$((RPMB_IMX_SIZE + RPMB_CSF_SIZE))"
 sha256sum out/vitrum-rpmb-provision-usbarmory.imx \
   out/vitrum-rpmb-provision-usbarmory.csf \
   out/vitrum-rpmb-provision-usbarmory-signed.imx
 ```
 
+Open-mode HAB does not prove that the SRK table inside a CSF matches the
+fused-hash input. Regenerate both public artifacts offline from the four SRK
+certificates and compare them byte-for-byte with the stored copies:
+
+```bash
+HAB_CHECK=$(mktemp -d)
+trap 'rm -rf "$HAB_CHECK"' EXIT
+habtool \
+  -1 "$HAB_KEYS/SRK_1_crt.pem" \
+  -2 "$HAB_KEYS/SRK_2_crt.pem" \
+  -3 "$HAB_KEYS/SRK_3_crt.pem" \
+  -4 "$HAB_KEYS/SRK_4_crt.pem" \
+  -t "$HAB_CHECK/SRK_1_2_3_4_table.bin" \
+  -o "$HAB_CHECK/SRK_1_2_3_4_fuse.bin"
+cmp "$HAB_CHECK/SRK_1_2_3_4_table.bin" \
+  "$HAB_KEYS/SRK_1_2_3_4_table.bin"
+cmp "$HAB_CHECK/SRK_1_2_3_4_fuse.bin" \
+  "$HAB_KEYS/SRK_1_2_3_4_fuse.bin"
+```
+
+Crucible places the SRK table at the byte offset stored in the CSF header's
+big-endian length field. Extract that exact range from both CSFs and compare
+it with the verified table:
+
+```bash
+TABLE="$HAB_KEYS/SRK_1_2_3_4_table.bin"
+TABLE_SIZE=$(stat -c %s "$TABLE")
+for CSF in out/vitrum-usbarmory.csf \
+  out/vitrum-rpmb-provision-usbarmory.csf; do
+  read -r CSF_HI CSF_LO < <(od -An -tu1 -j1 -N2 "$CSF")
+  TABLE_OFFSET=$((CSF_HI * 256 + CSF_LO))
+  dd if="$CSF" bs=64K iflag=skip_bytes,count_bytes \
+    skip="$TABLE_OFFSET" count="$TABLE_SIZE" status=none |
+    cmp - "$TABLE"
+done
+rm -rf "$HAB_CHECK"
+trap - EXIT
+```
+
 Archive both signed images, their component digests, the source commit, the
-Crucible revision, and the key manifest together.
+Crucible revision, and the key manifest together. Require `SOURCE_REVISION` to
+equal the archived commit.
 
 ## 4. Boot the signed image while HAB is open
 
@@ -247,12 +358,42 @@ With the switch toward eMMC, boot factory Linux and confirm the unit is still
 open before touching OTP:
 
 ```bash
-crucible -s -m IMX6UL -r 1 -b 2 read SEC_CONFIG
+SEC_CONFIG=$(crucible -s -m IMX6UL -r 1 -b 2 read SEC_CONFIG)
+printf '%s\n' "$SEC_CONFIG"
+case "$SEC_CONFIG" in
+  00|01) ;;
+  *) echo "SEC_CONFIG closed bit is already set" >&2; false ;;
+esac
 ```
 
-Stop unless the `SEC_CONFIG` field is `0`. Also read `SRK_LOCK`,
-`OCOTP_SRK_REVOKE`, and every fuse named in section 7; stop if the unit is not
-in the expected factory state. Then flash the signed image:
+`SEC_CONFIG` is two bits: `00` is FAB, `01` is Open, and `1x` is Closed. A
+shipped Mk II is expected to print `01`, but verify the actual unit rather
+than assuming its factory value. The gate is that the closed bit is clear;
+the later vitrum boot must independently report `hab.config=open`.
+
+Read and record the rest of the expected factory state:
+
+```bash
+crucible -s -m IMX6UL -r 1 -b 16 -e little read SRK_HASH
+crucible -s -m IMX6UL -r 1 -b 2 read SRK_LOCK
+crucible -s -m IMX6UL -r 1 -b 2 read OCOTP_SRK_REVOKE
+for fuse in DIR_BT_DIS SJC_DISABLE JTAG_SMODE JTAG_HEO KTE \
+  SDP_DISABLE SDP_READ_DISABLE UART_SERIAL_DOWNLOAD_DISABLE BT_FUSE_SEL; do
+  crucible -s -m IMX6UL -r 1 -b 2 read "$fuse"
+done
+```
+
+| Field | Expected quiet output |
+|---|---|
+| `SRK_HASH` | 64 zeroes |
+| `SRK_LOCK` | `0` |
+| `SEC_CONFIG` | normally `01`; only `00` or `01` is admissible |
+| `OCOTP_SRK_REVOKE` | 32 zeroes |
+| `JTAG_SMODE` | `00` |
+| every other listed hardening fuse | `0` |
+| `BT_FUSE_SEL` | `0` |
+
+Stop if any field differs. Then flash the signed image:
 
 ```bash
 sudo dd if=out/vitrum-usbarmory-signed.imx of="$ARMORY_CARD" \
@@ -265,22 +406,36 @@ archived image:
 
 ```bash
 IMAGE_SIZE=$(stat -c %s out/vitrum-usbarmory-signed.imx)
-sudo dd if="$ARMORY_CARD" bs=1 skip=1024 count="$IMAGE_SIZE" status=none \
+sudo dd if="$ARMORY_CARD" bs=4M iflag=skip_bytes,count_bytes \
+  skip=1024 count="$IMAGE_SIZE" status=none \
   | sha256sum
 sha256sum out/vitrum-usbarmory-signed.imx
 ```
 
 Shut down factory Linux, power off, move the switch toward the microSD slot,
-and boot vitrum. Require `/healthz`, `vitrum selftest`, and the firmware's HAB
-report to pass. The HAB report must identify a successful current boot and
-contain zero failure events. Power-cycle without moving the switch and repeat
-all three checks against the same installed artifact.
+and boot vitrum. Require `/healthz`, the firmware's HAB report, and the
+throwaway provisioning and `selftest` procedure from section 0 to pass.
+`/healthz` must report `revision=SOURCE_REVISION`, `snvs_secure=false`,
+`dev=true`, `hab.config=open`, and `hab.state=nonsecure`. The HAB report must
+identify a successful current boot and contain zero failure events.
+Power-cycle without moving the switch and repeat all three checks against the
+same installed artifact, again keeping its keys and pin outside `keys/`.
+
+This open-mode result is necessary but weak: HAB does not establish that the
+CSF's SRK table hashes to the fuse file while the device is open. The offline
+table/fuse/CSF comparisons in section 3 are the pre-close gate for that
+relationship.
 
 Also boot the exact signed RPMB provisioning artifact while HAB is open. Its
 own HAB report must identify a successful current boot with zero failure
-events. It must separately report that SNVS is not secure and refuse to
-program RPMB. Verify afterward that normal vitrum still reports RAM-only
-storage.
+events and report `config=open`, `state=nonsecure`. Require
+`revision=SOURCE_REVISION`, `snvs_secure=false`,
+`unprogrammed_before=true`, and `probe="unprogrammed (result 0x7)"`. It must
+refuse to program RPMB. This exercises `rpmb.Init` and the unauthenticated
+counter read on the real eMMC before closure. Power off, restore the archived
+signed production image with the same bounded flash and read-back procedure,
+and boot it again. Verify that it still reports result `0x7` in `/logz` and
+RAM-only storage.
 
 An instrumented substitute does not satisfy these gates: different image
 bytes can have different HAB layout or signing failures. Normal vitrum reports
@@ -299,14 +454,10 @@ IMAGE_SHA256=$(sha256sum out/vitrum-usbarmory-signed.imx | cut -d ' ' -f 1)
 printf 'size=%s sha256=%s\n' "$IMAGE_SIZE" "$IMAGE_SHA256"
 ```
 
-Connect to factory Linux and identify both MMC devices. If the armory Linux host
-key has not already been verified in a trusted setup session, stop and establish
-that trust before beginning the fuse session. Replace the address and 
-known-hosts path as required:
+Connect to factory Linux using the pin established before section 0 and
+identify both MMC devices:
 
 ```bash
-export ARMORY_SSH=root@10.0.0.1
-export ARMORY_KNOWN_HOSTS=/secure/usbarmory-factory-known_hosts
 ssh -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$ARMORY_KNOWN_HOSTS" "$ARMORY_SSH"
 ```
@@ -330,7 +481,8 @@ prefix nor the raw state area:
 
 ```bash
 IMAGE_SIZE=<decimal size printed on host>
-dd if="$ARMORY_SD" bs=1 skip=1024 count="$IMAGE_SIZE" status=none |
+dd if="$ARMORY_SD" bs=4M iflag=skip_bytes,count_bytes \
+  skip=1024 count="$IMAGE_SIZE" status=none |
   sha256sum
 ```
 
@@ -369,7 +521,9 @@ Keep stable power connected throughout the fuse session.
 ## 6. Burn and lock the SRK hash
 
 The following writes bank 3, words 0-7 using Crucible's required little-endian
-encoding:
+encoding. Every `blow` command in this runbook prompts for literal uppercase
+`YES`. Read the displayed fuse name and value before answering. Do not use
+`-Y` to suppress this gate.
 
 ```bash
 crucible -m IMX6UL -r 1 -b 16 -e little blow SRK_HASH "$FUSE_HEX"
@@ -389,12 +543,17 @@ crucible -s -m IMX6UL -r 1 -b 2 read SRK_LOCK
 
 Stop unless `SRK_LOCK` reads as `1`.
 
-## 7. Apply the test recovery profile
+## 7. Apply the production hardening profile
 
-This first-run profile keeps USB SDP enabled so a closed device can accept a
-properly signed recovery image. It disables SDP memory reads, UART SDP, direct
-reserved boot, JTAG, and trace. Keeping USB SDP permits recovery but leaves
-CVE-2022-45163 in scope; production must make and document that tradeoff.
+This ceremony is running on the sole production unit, so there is no separate
+sacrificial profile. The supported recovery path is a removable microSD card
+reflashed on a host with any known-good image signed by an unrevoked SRK.
+
+The archived media-boot images are not SDP recovery images. `habtool -s`
+clears the IVT DCD pointer and adds separate authentication for the DCD at its
+OCRAM address; this repository neither builds nor tests that artifact. Disable
+SDP in production to mitigate CVE-2022-45163, along with memory reads, UART
+SDP, direct reserved boot, JTAG, and trace:
 
 ```bash
 crucible -m IMX6UL -r 1 -b 2 -e big blow DIR_BT_DIS 1
@@ -402,26 +561,19 @@ crucible -m IMX6UL -r 1 -b 2 -e big blow SJC_DISABLE 1
 crucible -m IMX6UL -r 1 -b 2 -e big blow JTAG_SMODE 0b11
 crucible -m IMX6UL -r 1 -b 2 -e big blow JTAG_HEO 1
 crucible -m IMX6UL -r 1 -b 2 -e big blow KTE 1
+crucible -m IMX6UL -r 1 -b 2 -e big blow SDP_DISABLE 1
 crucible -m IMX6UL -r 1 -b 2 -e big blow SDP_READ_DISABLE 1
 crucible -m IMX6UL -r 1 -b 2 -e big blow UART_SERIAL_DOWNLOAD_DISABLE 1
 ```
 
 Read each fuse back with the corresponding `crucible ... read` command and
-record the output. Do not set `SDP_DISABLE` during the sacrificial test run.
-Production may set it to mitigate CVE-2022-45163, but doing so permanently
-removes USB SDP recovery:
-
-```bash
-# Production policy only; not part of the test profile:
-# crucible -m IMX6UL -r 1 -b 2 -e big blow SDP_DISABLE 1
-```
-
-Use this read-back block and require the selected field in each result to
-equal the value just written:
+record the output. `SDP_DISABLE=1` permanently removes USB SDP recovery. Use
+this read-back block and require `JTAG_SMODE` to print `11` and every other
+field to print `1`:
 
 ```bash
 for fuse in DIR_BT_DIS SJC_DISABLE JTAG_SMODE JTAG_HEO KTE \
-  SDP_READ_DISABLE UART_SERIAL_DOWNLOAD_DISABLE; do
+  SDP_DISABLE SDP_READ_DISABLE UART_SERIAL_DOWNLOAD_DISABLE; do
   crucible -s -m IMX6UL -r 1 -b 2 read "$fuse"
 done
 ```
@@ -429,8 +581,9 @@ done
 ## 8. Final gate and close HAB
 
 Factory Linux is still running from eMMC at this point. Shut it down cleanly
-without writing `SEC_CONFIG`. On the protected host, replace the boot image on
-the microSD with the archived signed RPMB provisioning image:
+without writing `SEC_CONFIG`, power off, remove the microSD, and move it to the
+protected host's card reader. Replace its boot image with the archived signed
+RPMB provisioning image:
 
 ```bash
 RPMB_IMAGE=out/vitrum-rpmb-provision-usbarmory-signed.imx
@@ -448,7 +601,8 @@ Read back exactly the provisioner image range and compare it with the archived
 artifact:
 
 ```bash
-sudo dd if="$ARMORY_CARD" bs=1 skip=1024 count="$RPMB_IMAGE_SIZE" \
+sudo dd if="$ARMORY_CARD" bs=4M iflag=skip_bytes,count_bytes \
+  skip=1024 count="$RPMB_IMAGE_SIZE" \
   status=none | sha256sum
 printf '%s  %s\n' "$RPMB_IMAGE_SHA256" "$RPMB_IMAGE"
 ```
@@ -466,7 +620,8 @@ installed range:
 export ARMORY_SD=/dev/mmcblkX
 RPMB_IMAGE_SIZE=<decimal size printed on host>
 test -b "$ARMORY_SD"
-dd if="$ARMORY_SD" bs=1 skip=1024 count="$RPMB_IMAGE_SIZE" status=none |
+dd if="$ARMORY_SD" bs=4M iflag=skip_bytes,count_bytes \
+  skip=1024 count="$RPMB_IMAGE_SIZE" status=none |
   sha256sum
 ```
 
@@ -483,6 +638,8 @@ Before running the next command, confirm all of the following:
   successful HAB boot with zero failure events each time;
 - the exact signed RPMB provisioning image reported a successful HAB boot
   with zero failure events, but refused RPMB programming while HAB was open;
+- the regenerated SRK table and fuse file matched their stored copies, and
+  the table matched the exact bytes embedded in both CSFs;
 - the archived signed RPMB provisioning image matches the microSD deployment;
 - the fused SRK hash matched `FUSE_HEX` before `SRK_LOCK` was set;
 - `SRK_LOCK` and every selected hardening fuse read back correctly;
@@ -502,17 +659,15 @@ crucible -m IMX6UL -r 1 -b 2 -e big blow SEC_CONFIG 0b11
 crucible -s -m IMX6UL -r 1 -b 2 read SEC_CONFIG
 ```
 
-Stop unless the read-back is `0b11`. Shut down factory Linux cleanly and
+Stop unless the read-back is exactly `11`. Shut down factory Linux cleanly and
 power-cycle without moving the switch. Do not rewrite or remove the card
 between closing and this boot.
 
 The next image is the RPMB provisioner, not normal vitrum. Continue directly
-to section 9. A boot or status failure ends the test; preserve the card, logs,
-fuse record, and key material for diagnosis.
-
-When booting a Linux diagnostic image on i.MX6ULZ, the `mxs_dcp` log should
-report `Trusted State detected`. That confirms the closed security state; it
-does not replace checking HAB events during development.
+to section 9. A boot or status failure before RPMB programming does not undo
+the fuses, but it is recoverable by diagnosing the event and reflashing a
+corrected, signed microSD image. Preserve the card, logs, fuse record, and key
+material; never respond by attempting another fuse value.
 
 ## 9. Program the RPMB authentication key
 
@@ -523,15 +678,18 @@ also cannot provide the key before closure: until a cold boot after
 
 The signed provisioning firmware must:
 
-1. require `imx6ul.SNVS.Available()` to report Trusted or Secure state;
-2. detect the internal eMMC and inspect RPMB without modifying it;
-3. distinguish an unprogrammed key from an already-programmed or inconsistent
-   device;
-4. derive `K_rpmb` with the production `deriveKey("vitrum-rpmb-v1")` path;
-5. call `RPMB.ProgramKey()` only when RPMB is conclusively unprogrammed;
-6. immediately verify an authenticated counter read with the derived key;
-7. never expose the derived key; and
-8. report an unambiguous success or failure through the available network and
+1. detect the internal eMMC and perform the read-only RPMB probe before any
+   HAB or SNVS refusal;
+2. distinguish result `0x7` (unprogrammed) from a transport or protocol error;
+3. when already programmed, authenticate a counter with the derived key and
+   report matching, foreign, or inconclusive without writing;
+4. require `imx6ul.SNVS.Available()` to report Trusted or Secure state before
+   programming;
+5. derive `K_rpmb` with the production `Derive("vitrum-rpmb-v1")` path;
+6. call `RPMB.ProgramKey()` only when RPMB is conclusively unprogrammed;
+7. immediately verify an authenticated counter read with the derived key;
+8. never expose the derived key; and
+9. report an unambiguous success or failure through the available network and
    LED interfaces, then halt.
 
 Booting this narrowly scoped image, authenticated by HAB, is the operator's
@@ -541,6 +699,9 @@ through normal vitrum's network API.
 Record the provisioner's status and require all of the following before
 continuing:
 
+- `revision` equals `SOURCE_REVISION`;
+- HAB reports `status=success`, `config=closed`, `state=trusted`, and zero
+  failure events;
 - SNVS reported Trusted or Secure state;
 - RPMB was conclusively unprogrammed before the write;
 - key programming reported success; and
@@ -557,22 +718,36 @@ Require `success`, `snvs_secure`, `unprogrammed_before`, `key_programmed`, and
 alternating blue and white indicates refusal or failure. `/logz` contains the
 corresponding diagnostic without key material.
 
-Any other result is terminal for this run. Do not retry programming and do not
-boot normal vitrum to see whether it happens to work.
+Failures before `key_programmed=true` are recoverable without another
+one-shot write. Preserve the status and HAB events, correct the firmware or
+signature, reflash the microSD on the host, and boot the signed provisioner
+again. In particular, `status=warning` is a refusal: investigate the raw HAB
+event and produce a clean signed image; do not weaken the gate.
+
+Once `key_programmed=true`, never retry programming. If the immediate
+authenticated read failed, power-cycle the unchanged provisioner for its
+read-only diagnostic. `programmed_before=true`, `derived_key_matches=true`,
+and `authenticated_counter=true` proves that RPMB contains this unit's
+derived key and permits continuing. `foreign_key=true`, or an inconclusive
+diagnostic that persists, is terminal because the one-time key cannot be
+replaced. Do not boot normal vitrum merely to probe an uncertain outcome.
 
 ## 10. Install and boot production vitrum
 
 Power off and remove the microSD. On the protected host, restore the archived
 signed production image using the bounded flash and read-back procedure from
-sections 3 and 4. This overwrites only the boot-image range beginning at 1 KiB;
+section 4. This overwrites only the boot-image range beginning at 1 KiB;
 it must not touch the raw state slots beginning at 16 MiB.
 
 Reinsert the card, keep the switch toward the microSD slot, and power on.
 Require the unit to enumerate and `/healthz` to show:
 
 - `target=usbarmory`;
+- `revision=SOURCE_REVISION`;
+- `snvs_secure=true` and `dev=false`;
+- `hab.status=success`, `hab.config=closed`, `hab.state=trusted`, and zero HAB
+  failure events;
 - RPMB-backed persistence;
-- no DEV key or storage markers; and
 - generation zero with fresh microSD state.
 
 The SSH host identity is different from the pre-close DEV identity because it
@@ -580,10 +755,12 @@ is now derived from the unique OTPMK.
 
 ## 11. Pin the production SSH identity
 
-With the armory connected directly to the provisioning host and the DEV pin
-already removed, generate a witness seed if required and pair once:
+With the armory connected directly to the provisioning host, require that no
+production seed or pin exists, generate a fresh witness seed, and pair once:
 
 ```bash
+test ! -e keys/witness.seed
+test ! -e keys/ssh_host.pub
 go run ./cmd/vitrum keygen
 go run ./cmd/vitrum provision -tofu
 ```
@@ -597,18 +774,19 @@ identity, sets the clock, and uploads the witness seed. Back up
 Verify the newly provisioned witness:
 
 ```bash
-go run ./cmd/vitrum selftest
+go run ./cmd/vitrum selftest -witness http://10.0.0.1
 ```
 
 Back up `keys/witness.seed` offline. The seed is the witness private key. The
 device holds it only in volatile RAM, so it must be uploaded after every cold
 boot.
 
-Require `/healthz` to show `provisioned=true`, RPMB persistence, no DEV marks,
-a sane time, and a running sequencer. Submit a checkpoint and record the
-result. Then power-cycle, re-provision, and resubmit. The witness must use its
-stored checkpoint size, demonstrating that the microSD state and RPMB anchor
-survived the reboot.
+Require `/healthz` to show `provisioned=true`, `revision=SOURCE_REVISION`,
+`snvs_secure=true`, `dev=false`, closed/trusted HAB, RPMB persistence, a sane
+time, and a running sequencer. Submit a checkpoint and record the result. Then
+power-cycle, re-provision, and resubmit. The witness must use its stored
+checkpoint size, demonstrating that the microSD state and RPMB anchor survived
+the reboot.
 
 ## Halt state
 
@@ -641,15 +819,22 @@ views described in [SECURITY.md](SECURITY.md):
 
 - An open device may execute an image despite HAB authentication errors. It
   can also fail to boot for ordinary image-layout or runtime defects.
-- Under the test profile, a closed device may use USB SDP, but every recovery
-  image must authenticate against an unrevoked fused SRK. Test this recovery
-  path separately before relying on it.
-- With `SDP_DISABLE=1`, there is no SDP recovery path.
+- The production profile sets `SDP_DISABLE=1`; there is no USB SDP recovery
+  path, and the archived media-boot images were not signed for SDP.
+- The primary recovery path is the removable microSD. Reflash it on a host
+  with a known-good image signed by an unrevoked fused SRK. Preserve at least
+  one such image with the offline key backups.
 - Lost private keys do not invalidate existing signed images, but prevent new
   releases. Loss of all usable signed images and signing keys is terminal.
 - A wrong locked SRK hash cannot be corrected. Before closure the unit may
   still run unsigned code; after closure it cannot authenticate the intended
   images.
+
+The upstream `mxs_dcp: Trusted State detected` check applies only when booting
+a HAB-signed Linux diagnostic image. The unsigned factory Linux image cannot
+boot after closure, so its pre-close log cannot establish the production
+state. Prefer vitrum's closed/trusted HAB and SNVS reports unless a separately
+signed Linux image has been prepared and verified.
 
 ## SRK revocation
 

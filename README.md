@@ -41,8 +41,8 @@ The `Makefile` provides these targets:
 
 `make imx_signed` produces (but never flashes) a HAB-signed image. See
 [PRODUCTION_SETUP.md](PRODUCTION_SETUP.md) for the hardware ceremony; it is
-not yet ready for execution because the RPMB provisioning image remains to be
-implemented and tested.
+not yet hardware-tested. The one-shot RPMB provisioning image is implemented
+and covered by host-side protocol tests.
 
 ## Operating
 
