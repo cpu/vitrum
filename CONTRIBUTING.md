@@ -9,7 +9,8 @@ Without Nix, install Go 1.24+, `uboot-tools`, `gcc`, `qemu`, and `gnumake`.
 
 ## Testing
 
-Run host-side unit tests with `go test ./...`.
+Run host-side unit tests with `make test`. Run the pinned static analyzer with
+`make staticcheck`.
 
 The `Makefile` also provides:
 

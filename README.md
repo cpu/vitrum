@@ -30,12 +30,13 @@ installed manually.
 
 The `Makefile` provides these targets:
 
-    make test      # run host-side unit tests
-    make qemu      # build & boot the emulated target (TARGET=mx6ullevk)
-    make e2e       # test full provisioning + witness flow under QEMU
-    make e2e-live  # feed a live log (keyserver.geomys.org) through QEMU
-    make imx       # build bootable image for the armory (TARGET=usbarmory)
-    make repro     # verify a reproducible build
+    make test         # run host-side unit tests
+    make staticcheck  # run the pinned static analyzer
+    make qemu         # build & boot the emulated target (TARGET=mx6ullevk)
+    make e2e          # test full provisioning + witness flow under QEMU
+    make e2e-live     # feed a live log (keyserver.geomys.org) through QEMU
+    make imx          # build bootable image for the armory (TARGET=usbarmory)
+    make repro        # verify a reproducible build
 
 `make imx_signed` produces (but never flashes) a HAB-signed image. The fuse and
 flash operations are out of scope.

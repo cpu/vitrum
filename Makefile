@@ -54,7 +54,7 @@ QEMU ?= qemu-system-arm -machine mcimx6ul-evk -cpu cortex-a7 -m 512M \
         -nographic -monitor none -semihosting \
         -serial $(UART1) -serial $(UART2) -net $(NET)
 
-.PHONY: all elf imx imx_signed qemu qemu-build repro test e2e e2e-live clean check_tamago check_hab_keys
+.PHONY: all elf imx imx_signed qemu qemu-build repro test staticcheck e2e e2e-live clean check_tamago check_hab_keys
 
 all: elf
 
@@ -64,6 +64,9 @@ imx: $(ELF).imx
 
 test:
 	go test ./...
+
+staticcheck:
+	go tool staticcheck ./...
 
 check_tamago:
 	@if [ "$(TAMAGO)" == "" ] || [ ! -f "$(TAMAGO)" ]; then \
