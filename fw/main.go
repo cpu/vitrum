@@ -85,8 +85,7 @@ func main() {
 		fatal(err)
 	}
 
-	go provisionLED(w)
-	go haltLED(w)
+	go statusLED(w)
 	log.Printf("vitrum witness listening on %s:80, unprovisioned", IP)
 
 	serviceInterrupts(usbPort, eth, iface) // never returns
@@ -131,23 +130,54 @@ func (sw *statusWriter) WriteHeader(code int) {
 	sw.ResponseWriter.WriteHeader(code)
 }
 
-// provisionLED blinks blue until a witness key is installed, then holds
-// solid.
-func provisionLED(w *witness.Witness) {
-	on := false
+var cosignPulse = make(chan struct{}, 1)
+
+// statusLED displays provisioning, cosigning, and halt state. Halt takes
+// precedence over all other indications.
+func statusLED(w *witness.Witness) {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	var blue, white, halted, haltOn bool
+	lastBlueToggle := time.Now()
+	lastHaltToggle := time.Now()
+	var whiteUntil time.Time
+
+	set := func(name string, current *bool, on bool) {
+		if *current != on {
+			led(name, on)
+			*current = on
+		}
+	}
 
 	for {
-		if w.Provisioned() {
-			if !on {
-				led("blue", true)
-				on = true
-			}
-		} else {
-			on = !on
-			led("blue", on)
-		}
+		select {
+		case <-cosignPulse:
+			whiteUntil = time.Now().Add(100 * time.Millisecond)
 
-		time.Sleep(500 * time.Millisecond)
+		case now := <-ticker.C:
+			if w.Halted() {
+				if !halted {
+					halted = true
+					haltOn = true
+					lastHaltToggle = now
+				} else if now.Sub(lastHaltToggle) >= 150*time.Millisecond {
+					haltOn = !haltOn
+					lastHaltToggle = now
+				}
+				set("blue", &blue, haltOn)
+				set("white", &white, haltOn)
+				continue
+			}
+
+			if w.Provisioned() {
+				set("blue", &blue, true)
+			} else if now.Sub(lastBlueToggle) >= 500*time.Millisecond {
+				set("blue", &blue, !blue)
+				lastBlueToggle = now
+			}
+			set("white", &white, now.Before(whiteUntil))
+		}
 	}
 }
 
@@ -158,30 +188,12 @@ func cosignLED(next http.Handler) http.Handler {
 		next.ServeHTTP(sw, r)
 
 		if r.Method == http.MethodPost && sw.code == http.StatusOK {
-			go func() {
-				led("white", true)
-				time.Sleep(100 * time.Millisecond)
-				led("white", false)
-			}()
+			select {
+			case cosignPulse <- struct{}{}:
+			default:
+			}
 		}
 	})
-}
-
-// haltLED blinks both LEDs together once the store halts (at boot, or after
-// a failed commit), a pattern distinct from the unprovisioned blink and the
-// fatal alternation.
-func haltLED(w *witness.Witness) {
-	for !w.Halted() {
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	on := false
-	for {
-		on = !on
-		led("blue", on)
-		led("white", on)
-		time.Sleep(150 * time.Millisecond)
-	}
 }
 
 // fatal logs err and signals the failure on the LEDs forever.
