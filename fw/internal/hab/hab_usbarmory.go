@@ -91,11 +91,11 @@ func Report() Status {
 }
 
 func readHABReport() {
-	var config, state byte
+	var config, state uint32
 	statusFn := *(*uintptr)(unsafe.Pointer(uintptr(habReportStatusRVT)))
 	status := habCallStatus(statusFn, uintptr(unsafe.Pointer(&config)), uintptr(unsafe.Pointer(&state)))
 	habBoot = Status{
-		Status: habStatusName(status), Config: habConfigName(config), State: habStateName(state),
+		Status: habStatusName(status), Config: habConfigName(byte(config)), State: habStateName(byte(state)),
 		Events: make([]Event, 0),
 	}
 
