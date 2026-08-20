@@ -7,12 +7,6 @@ follows the [USB armory Mk II secure-boot guide][upstream] and uses its
 `habtool` and `crucible` conventions.
 
 > [!WARNING]
-> This procedure has not yet completed a physical test run in this project.
-> There is no spare unit: the first fuse session is the production ceremony.
-> Complete every pre-fuse rehearsal and stop on any discrepancy. OTP fuse
-> writes cannot be undone.
-
-> [!WARNING]
 > The eMMC RPMB authentication key can be programmed only once. It must be
 > derived after HAB is closed, when the SoC exposes its unique OTPMK. A key
 > programmed while HAB is open is derived from the common test key and makes
@@ -51,9 +45,8 @@ key authenticates HAB commands; the IMG key authenticates the image data.
   `crucible` runs there as root with `nvmem-imx-ocotp` loaded.
 - Use a dedicated microSD card and identify its whole-device path exactly.
 - Build from a clean, reviewed commit in `nix develop`.
-- The RPMB provisioning firmware described in section 9 is implemented and
-  host-tested but has not run on physical hardware. Do not begin the fuse
-  session unless that first-use risk is accepted.
+- The RPMB provisioning firmware described in section 9 must pass its
+  open-mode physical-hardware gate in section 4 before HAB is closed.
 - Both production vitrum and the RPMB provisioner must report HAB ROM status
   and events for their own current boot. Do not begin the fuse session unless
   the section 4 checks pass for both exact signed artifacts.
@@ -68,7 +61,7 @@ never paste the example device path unchanged.
 ```bash
 export HAB_KEYS=/secure/vitrum-hab-keys
 export ARMORY_CARD=/dev/sdX
-export ARMORY_SSH=root@10.0.0.1
+export ARMORY_SSH=usbarmory@10.0.0.1
 export ARMORY_KNOWN_HOSTS=/secure/usbarmory-factory-known_hosts
 test -b "$ARMORY_CARD"
 ```
@@ -210,10 +203,10 @@ temporary path, compare its digest, then install it as root:
 ```bash
 scp -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$ARMORY_KNOWN_HOSTS" \
-  "$CRUCIBLE_ARM" "$ARMORY_SSH:/root/crucible"
+  "$CRUCIBLE_ARM" "$ARMORY_SSH:/tmp/crucible-pinned"
 ssh -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$ARMORY_KNOWN_HOSTS" "$ARMORY_SSH" \
-  'sha256sum /root/crucible'
+  'sha256sum /tmp/crucible-pinned'
 ```
 
 Stop unless the remote digest matches the host digest. Then install it and
@@ -222,7 +215,8 @@ require the embedded fuse-map list to include `IMX6UL`:
 ```bash
 ssh -o StrictHostKeyChecking=yes \
   -o UserKnownHostsFile="$ARMORY_KNOWN_HOSTS" "$ARMORY_SSH" \
-  'install -m 0755 /root/crucible /usr/local/sbin/crucible && /usr/local/sbin/crucible -l'
+  'sudo install -m 0755 /tmp/crucible-pinned /usr/local/sbin/crucible && \
+   sudo /usr/local/sbin/crucible -l'
 ```
 
 Record the binary digest with the ceremony log.
@@ -287,13 +281,23 @@ make repro APP=vitrum-rpmb-provision FWPKG=./fw/rpmb-provision \
 ```
 
 The signed targets run the pinned `tamago install habtool@...` command on every
-invocation. Prove that its module and checksum cache are warm by building with
-module downloads disabled. Stop if either offline build fails.
+invocation. Go 1.26 performs a module deprecation lookup even when the module
+is already cached, so `GOPROXY=off` rejects this command. Point the Go command
+at the warm local download cache with no fallback and disable remote checksum
+lookups. Stop if either offline build fails:
+
+```bash
+TAMAGO_BIN=$(go tool -n github.com/usbarmory/tamago/cmd/tamago)
+MODCACHE=$("$TAMAGO_BIN" env GOMODCACHE)
+LOCAL_GOPROXY="file://$MODCACHE/cache/download"
+test -d "$MODCACHE/cache/download"
+```
 
 Build the production image:
 
 ```bash
-GOPROXY=off make imx_signed TARGET=usbarmory \
+GOSUMDB=off GOPROXY="$LOCAL_GOPROXY" \
+  make imx_signed TARGET=usbarmory \
   HAB_KEYS="$HAB_KEYS" HAB_SRK_INDEX=1
 
 test -s out/vitrum-usbarmory.imx
@@ -308,7 +312,8 @@ sha256sum out/vitrum-usbarmory.imx out/vitrum-usbarmory.csf \
 Build and inspect the one-off provisioner with the same keys and SRK index:
 
 ```bash
-GOPROXY=off make rpmb_provision_signed \
+GOSUMDB=off GOPROXY="$LOCAL_GOPROXY" \
+  make rpmb_provision_signed \
   HAB_KEYS="$HAB_KEYS" HAB_SRK_INDEX=1
 
 test -s out/vitrum-rpmb-provision-usbarmory.imx
@@ -404,10 +409,14 @@ done
 | `SEC_CONFIG` | normally `01`; only `00` or `01` is admissible |
 | `OCOTP_SRK_REVOKE` | 32 zeroes |
 | `JTAG_SMODE` | `00` |
+| `UART_SERIAL_DOWNLOAD_DISABLE` | normally `0`; a documented factory workaround may make `1` admissible |
 | every other listed hardening fuse | `0` |
 | `BT_FUSE_SEL` | `0` |
 
-Stop if any field differs. Then flash the signed image:
+If `UART_SERIAL_DOWNLOAD_DISABLE` is already `1`, require the factory record
+to identify it as the known USB armory workaround and record that exception;
+do not attempt to clear or reprogram it. Stop if any other field differs.
+Then flash the signed image:
 
 ```bash
 sudo dd if=out/vitrum-usbarmory-signed.imx of="$ARMORY_CARD" \
@@ -578,7 +587,11 @@ crucible -m IMX6UL -r 1 -b 2 -e big blow JTAG_HEO 1
 crucible -m IMX6UL -r 1 -b 2 -e big blow KTE 1
 crucible -m IMX6UL -r 1 -b 2 -e big blow SDP_DISABLE 1
 crucible -m IMX6UL -r 1 -b 2 -e big blow SDP_READ_DISABLE 1
-crucible -m IMX6UL -r 1 -b 2 -e big blow UART_SERIAL_DOWNLOAD_DISABLE 1
+if test "$(crucible -s -m IMX6UL -r 1 -b 2 \
+  read UART_SERIAL_DOWNLOAD_DISABLE)" = 0; then
+  crucible -m IMX6UL -r 1 -b 2 -e big \
+    blow UART_SERIAL_DOWNLOAD_DISABLE 1
+fi
 ```
 
 Read each fuse back with the corresponding `crucible ... read` command and
@@ -739,6 +752,14 @@ signature, reflash the microSD on the host, and boot the signed provisioner
 again. In particular, `status=warning` is a refusal: investigate the raw HAB
 event and produce a clean signed image; do not weaken the gate.
 
+The TamaGo v1.26.6 uSDHC driver cannot issue an RPMB reliable write without
+the local reliable-write correction. Its uncorrected pre-write failure is
+`transfer size cannot exceed 65535 blocks`. If that exact error occurs with
+`key_programmed=false`, preserve the powered state, build and sign a new
+committed revision containing the correction, archive both new signed images,
+then power off only to reflash the corrected provisioner. Do not retry the
+unchanged image.
+
 Once `key_programmed=true`, never retry programming. If the immediate
 authenticated read failed, power-cycle the unchanged provisioner for its
 read-only diagnostic. `programmed_before=true`, `derived_key_matches=true`,
@@ -746,6 +767,9 @@ and `authenticated_counter=true` proves that RPMB contains this unit's
 derived key and permits continuing. `foreign_key=true`, or an inconclusive
 diagnostic that persists, is terminal because the one-time key cannot be
 replaced. Do not boot normal vitrum merely to probe an uncertain outcome.
+After a verified success, treat the provisioner as a ceremony-only artifact:
+restore production vitrum immediately and do not boot the provisioner during
+normal operation.
 
 ## 10. Install and boot production vitrum
 
@@ -770,19 +794,71 @@ is now derived from the unique OTPMK.
 
 ## 11. Pin the production SSH identity
 
-With the armory connected directly to the provisioning host, require that no
-production seed or pin exists, generate a fresh witness seed, and pair once:
+Choose the permanent public witness name before generating its key. Use a
+stable name controlled by the operator; the built-in
+`vitrum-UNSAFE-test-key.invalid` default is forbidden in production. Set the
+same name for every future provisioning command:
 
 ```bash
-test ! -e keys/witness.seed
-test ! -e keys/ssh_host.pub
-go run ./cmd/vitrum keygen
-go run ./cmd/vitrum provision -tofu
+export WITNESS_NAME=witness.example.com
+case "$WITNESS_NAME" in
+  ""|vitrum-UNSAFE-test-key.invalid)
+    echo "invalid production witness name" >&2
+    false
+    ;;
+esac
 ```
 
-The provisioning command requires `keys/witness.seed`, pins the production SSH
-identity, sets the clock, and uploads the witness seed. Back up
-`keys/ssh_host.pub`; future connections must require that pin.
+Do not overwrite or silently reuse old development keys. Fail closed if any
+default or legacy identity path already exists; quarantine and identify stale
+material before restarting this gate:
+
+```bash
+test ! -e keys/witness.seed && \
+  test ! -e keys/witness.vkey && \
+  test ! -e keys/ssh_host.pub && \
+  test ! -e keys/armory_host.pub && \
+  echo "production identity paths are unused: OK"
+```
+
+Generate the production identity and require the public verifier to begin
+with the selected name:
+
+```bash
+go run ./cmd/vitrum keygen -name "$WITNESS_NAME"
+test "$(stat -c %a keys/witness.seed)" = 600
+case "$(cat keys/witness.vkey)" in
+  "$WITNESS_NAME"+*) ;;
+  *) echo "witness verifier has the wrong name" >&2; false ;;
+esac
+```
+
+The first production boot logs the HUK-derived SSH fingerprint. Scan the
+offered key over the isolated link and stop unless its fingerprint exactly
+matches that trusted boot log:
+
+```bash
+SSH_SCAN=$(mktemp)
+trap 'rm -f "$SSH_SCAN"' EXIT
+ssh-keyscan -T 5 -t ed25519 10.0.0.1 >"$SSH_SCAN" 2>/dev/null
+ssh-keygen -lf "$SSH_SCAN"
+```
+
+Pair once, passing the permanent witness name explicitly:
+
+```bash
+go run ./cmd/vitrum provision -tofu -name "$WITNESS_NAME"
+ssh-keygen -lf keys/ssh_host.pub
+```
+
+Require the saved SSH fingerprint to match the pre-pairing scan and the
+provisioning output to reproduce `keys/witness.vkey`. The command pins the
+production SSH identity, sets the clock, and uploads the witness seed.
+
+Before any cold boot, store `witness.seed`, `witness.vkey`, and
+`ssh_host.pub` together in a mode-0700 directory on encrypted storage. Create
+and verify a SHA-256 manifest, then independently verify two offline backups.
+The seed is the witness private key and is required after every cold boot.
 
 ## 12. Provision and verify the witness
 
@@ -792,16 +868,44 @@ Verify the newly provisioned witness:
 go run ./cmd/vitrum selftest -witness http://10.0.0.1
 ```
 
-Back up `keys/witness.seed` offline. The seed is the witness private key. The
-device holds it only in volatile RAM, so it must be uploaded after every cold
-boot.
-
 Require `/healthz` to show `provisioned=true`, `revision=SOURCE_REVISION`,
 `snvs_secure=true`, `dev=false`, closed/trusted HAB, RPMB persistence, a sane
-time, and a running sequencer. Submit a checkpoint and record the result. Then
-power-cycle, re-provision, and resubmit. The witness must use its stored
-checkpoint size, demonstrating that the microSD state and RPMB anchor survived
-the reboot.
+time, a generation greater than zero, and a running sequencer with zero failed
+batches.
+
+Do not rerun `selftest` after a reboot: it deliberately begins with a fresh
+synthetic-log submission. Instead, submit a live checkpoint and record the
+generation and complete `logs` map:
+
+```bash
+go run ./cmd/vitrum feed -log-name keyserver \
+  -witness http://10.0.0.1
+curl -fsS http://10.0.0.1/healthz > production-pre-reboot.json
+jq '{generation,logs,persistence,provisioned,witness_key,hab,snvs_secure,halted}' \
+  production-pre-reboot.json
+```
+
+Perform a real cold boot: remove every power source, require both LEDs to go
+dark, and reconnect the same card without moving the microSD switch. Before
+reprovisioning, require low uptime, `provisioned=false`, an empty
+`witness_key`, and the exact pre-reboot generation and log sizes. `/logz` must
+report restoration of that generation from the RPMB-backed state.
+
+Reprovision through the existing pin without `-tofu`, then resubmit the same
+live log:
+
+```bash
+go run ./cmd/vitrum provision -name "$WITNESS_NAME"
+go run ./cmd/vitrum feed -log-name keyserver \
+  -witness http://10.0.0.1
+```
+
+The feed must report the size already held by the witness, construct a
+consistency proof if the live log grew, and return a verified cosignature.
+Require the final health report to retain closed/trusted HAB, secure SNVS,
+RPMB persistence, the named witness key, monotonic generation, and zero failed
+batches. Archive the pre- and post-reboot reports and refresh both encrypted
+backups before declaring the ceremony complete.
 
 ## Halt state
 

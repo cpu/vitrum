@@ -40,9 +40,9 @@ The `Makefile` provides these targets:
     make repro        # verify a reproducible build
 
 `make imx_signed` produces (but never flashes) a HAB-signed image. See
-[PRODUCTION_SETUP.md](PRODUCTION_SETUP.md) for the hardware ceremony; it is
-not yet hardware-tested. The one-shot RPMB provisioning image is implemented
-and covered by host-side protocol tests.
+[PRODUCTION_SETUP.md](PRODUCTION_SETUP.md) for the hardware ceremony. The
+complete ceremony, including closed HAB, one-shot RPMB provisioning, and
+cold-boot rollback-state recovery, has passed on a USB armory Mk II.
 
 ## Operating
 
@@ -54,9 +54,9 @@ and lives only in RAM.
 
 The host-side `vitrum` tool drives these interactions:
 
-    vitrum keygen                    # generate a witness seed
-    vitrum provision [-tofu]         # set clock + upload seed over SSH
-                                     # (host key pinned; -tofu pairs once)
+    vitrum keygen -name <name>       # generate a named witness seed
+    vitrum provision -name <name>    # set clock + upload seed over SSH
+                                     # (-tofu pairs the host key once)
     vitrum feed -log-name keyserver  # verify a log checkpoint, submit it,
                                      # verify the returned cosignature
     vitrum selftest                  # drive a synthetic log end to end
@@ -64,3 +64,7 @@ The host-side `vitrum` tool drives these interactions:
 
 `vitrum record` captures live request fixtures for offline tests. `vitrum
 hostkey` generates the emulated target's host key.
+
+The default witness name is explicitly unsafe test configuration. Production
+key generation and every later provisioning command must pass the same stable
+`-name` value.
