@@ -71,8 +71,8 @@ func habStateName(v byte) string {
 const (
 	habSuccess         = 0xf0
 	habFailure         = 0x33
-	habReportEventRVT  = 0x000000b4
-	habReportStatusRVT = 0x000000b8
+	habReportEventRVT  = 0x00000120
+	habReportStatusRVT = 0x00000124
 	habEventMax        = 128
 )
 
