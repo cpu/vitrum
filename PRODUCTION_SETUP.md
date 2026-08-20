@@ -136,9 +136,20 @@ sudo dd if=out/vitrum-usbarmory.imx of="$ARMORY_CARD" \
 
 Power off, move the switch toward the microSD slot, and boot vitrum. Check
 `http://10.0.0.1/healthz`. Require `target=usbarmory`, `snvs_secure=false`,
-`dev=true`, and `hab.config=open`, `hab.state=nonsecure`. Record the complete
-`hab` object from this unsigned image as a control for the ROM-reporting path.
-An unprogrammed RPMB causes storage to degrade to RAM-only.
+`dev=true`, `hab.config=open`, and `hab.state=nonsecure`. An unsigned image is
+not authenticated even while HAB is open, so require `hab.status=failure`,
+`hab.failures=5`, and exactly five failure events:
+
+- one `HAB_INV_CSF` event in `HAB_CTX_CSF`, whose raw record is
+  `db0008423311cf00`;
+- four `HAB_INV_ASSERTION` events in `HAB_CTX_ASSERT`, whose raw records begin
+  with `db001442330ca000`.
+
+The remaining assertion-event bytes identify image regions and therefore
+depend on the exact image layout. Record the complete `hab` object as the
+unsigned control for the ROM-reporting path. Any different count, status,
+reason, or context is a stop condition. An unprogrammed RPMB causes storage to
+degrade to RAM-only.
 
 Check `/logz`. Require the device-key warning and the SSH host-key source to
 be marked DEV, and require the RPMB probe failure to contain exactly
@@ -161,6 +172,9 @@ unset DEV_KEYS
 
 Confirm that `keys/witness.seed` and `keys/ssh_host.pub` were not created by
 this DEV-phase test.
+
+Power-cycle without moving the switch and repeat `/healthz` and `/logz`.
+Require the complete `hab` object to match the first boot of the same image.
 
 Power off and move the switch toward eMMC before continuing.
 
@@ -417,7 +431,8 @@ and boot vitrum. Require `/healthz`, the firmware's HAB report, and the
 throwaway provisioning and `selftest` procedure from section 0 to pass.
 `/healthz` must report `revision=SOURCE_REVISION`, `snvs_secure=false`,
 `dev=true`, `hab.config=open`, and `hab.state=nonsecure`. The HAB report must
-identify a successful current boot and contain zero failure events.
+identify a successful current boot and contain zero failure events, replacing
+the five-event unsigned control from section 0.
 Power-cycle without moving the switch and repeat all three checks against the
 same installed artifact, again keeping its keys and pin outside `keys/`.
 
