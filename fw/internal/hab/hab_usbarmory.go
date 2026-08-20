@@ -6,6 +6,9 @@ import (
 	"encoding/hex"
 	"sync"
 	"unsafe"
+
+	"github.com/usbarmory/tamago/arm"
+	"github.com/usbarmory/tamago/soc/nxp/imx6ul"
 )
 
 func eventStatus(event []byte) byte {
@@ -91,6 +94,10 @@ func Report() Status {
 }
 
 func readHABReport() {
+	// TamaGo leaves the first page unmapped to trap nil pointers.
+	imx6ul.ARM.ConfigureMMU(0, 1<<20, 0, arm.DeviceRegion)
+	defer imx6ul.ARM.InitMMU()
+
 	var config, state uint32
 	statusFn := *(*uintptr)(unsafe.Pointer(uintptr(habReportStatusRVT)))
 	status := habCallStatus(statusFn, uintptr(unsafe.Pointer(&config)), uintptr(unsafe.Pointer(&state)))
