@@ -1,0 +1,267 @@
+TamaGo - bare metal Go - Raspberry Pi Support
+=============================================
+
+tamago | https://github.com/usbarmory/tamago  
+
+Copyright (c) The TamaGo Authors. All Rights Reserved.  
+
+![TamaGo gopher](https://github.com/usbarmory/tamago/wiki/images/tamago.svg?sanitize=true)
+
+Contributors
+============
+
+[Kenneth Bell](https://github.com/kenbell)
+
+Introduction
+============
+
+TamaGo is a framework that enables compilation and execution of unencumbered Go
+applications on bare metal processors.
+
+The [pi](https://github.com/usbarmory/tamago/tree/master/board/raspberrypi)
+package provides support for the [Raspberry Pi](https://www.raspberrypi.org/)
+series of Single Board Computer.
+
+Documentation
+=============
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/usbarmory/tamago.svg)](https://pkg.go.dev/github.com/usbarmory/tamago)
+
+For more information about TamaGo see its
+[repository](https://github.com/usbarmory/tamago) and
+[project wiki](https://github.com/usbarmory/tamago/wiki).
+
+For the underlying driver support for this board see package
+[bcm2835](https://github.com/usbarmory/tamago/tree/master/bcm2835).
+
+The package API documentation can be found on
+[pkg.go.dev](https://pkg.go.dev/github.com/usbarmory/tamago).
+
+Supported hardware
+==================
+
+| SoC              | Board                | SoC package                                                            | Board package                                                                         |
+|------------------|----------------------|------------------------------------------------------------------------|---------------------------------------------------------------------------------------|
+| Broadcom BCM2835 | Pi Zero              | [bcm2835](https://github.com/usbarmory/tamago/tree/master/soc/bcm2835) | [pi/pizero](https://github.com/usbarmory/tamago/tree/master/board/raspberrypi/pizero) |
+| Broadcom BCM2835 | Pi 1 Model A+ (v1.2) | [bcm2835](https://github.com/usbarmory/tamago/tree/master/soc/bcm2835) | [pi/pi1](https://github.com/usbarmory/tamago/tree/master/board/raspberrypi/pi1)       |
+| Broadcom BCM2835 | Pi 1 Model B+ (v1.2) | [bcm2835](https://github.com/usbarmory/tamago/tree/master/soc/bcm2835) | [pi/pi1](https://github.com/usbarmory/tamago/tree/master/board/raspberrypi/pi1)       |
+| Broadcom BCM2836 | Pi 2 Model B (v1.1)  | [bcm2835](https://github.com/usbarmory/tamago/tree/master/soc/bcm2835) | [pi/pi2](https://github.com/usbarmory/tamago/tree/master/board/raspberrypi/pi2)       |
+
+Compiling
+=========
+
+Go distribution supporting `GOOS=tamago`
+---------------------------------------
+
+The [tamago](https://github.com/usbarmory/tamago/tree/latest/cmd/tamago)
+command downloads, compiles, and runs the `go` command from the
+[TamaGo distribution](https://github.com/usbarmory/tamago-go) matching the
+tamago module version from the application `go.mod`.
+
+Applications can add `github.com/usbarmory/tamago` to `go.mod`, and then
+replace the `go` command with:
+
+
+```sh
+go run github.com/usbarmory/tamago/cmd/tamago
+```
+
+or add the following line to `go.mod` to use `go tool tamago` as go command:
+
+```
+tool github.com/usbarmory/tamago/cmd/tamago
+```
+
+Alternatively the
+[latest TamaGo distribution](https://github.com/usbarmory/tamago-go/tree/latest) can be
+manually built or the
+[latest binary release](https://github.com/usbarmory/tamago-go/releases/latest) can be used:
+
+```sh
+wget https://github.com/usbarmory/tamago-go/archive/refs/tags/latest.zip
+unzip latest.zip
+cd tamago-go-latest/src && ./all.bash
+cd ../bin && export TAMAGO=`pwd`/go
+```
+
+Building applications
+---------------------
+
+Go applications are required to set `GOOSPKG` to the desired
+[runtime/goos](https://github.com/usbarmory/tamago-go/tree/latest/src/runtime/goos)
+overlay and import the relevant board package to ensure that hardware
+initialization and runtime support take place:
+
+```golang
+import (
+    _ "github.com/usbarmory/tamago/board/raspberrypi/pi2"
+)
+```
+
+OR
+
+```golang
+import (
+    _ "github.com/usbarmory/tamago/board/raspberrypi/pi1"
+)
+```
+
+OR
+
+```golang
+import (
+    _ "github.com/usbarmory/tamago/board/raspberrypi/pizero"
+)
+```
+
+Go applications can be compiled as usual, using the compiler built in the
+previous step, but with the addition of the following flags/variables:
+
+```sh
+GOOS=tamago GOOSPKG=github.com/usbarmory/tamago GOARM=5 GOARCH=arm \
+	${TAMAGO} build -ldflags "-T 0x00010000 -R 0x1000" main.go
+```
+
+GOARM & Examples
+----------------
+
+The GOARM environment variable must be set according to the Raspberry Pi model:
+
+| Model | GOARM | Example                                                     |
+|-------|-------|-------------------------------------------------------------|
+| Zero  |   5   | <https://github.com/usbarmory/tamago-example-pizero>        |
+| 1A+   |   5   | <https://github.com/prusnak/tamago-example-pi1>             |
+| 1B+   |   5   | <https://github.com/prusnak/tamago-example-pi1>             |
+| 2B    |   7   | <https://github.com/kenbell/tamago-example-pi2>             |
+
+NOTE: The Pi Zero and Pi 1 are ARMv6, but do not have support for all floating point instructions the Go compiler
+generates with `GOARM=6`.  Using `GOARM=5` causes Go to include a software floating point implementation.
+
+Build tags
+==========
+
+The following build tags allow applications to override the package own
+definition for the `runtime/goos` overlay:
+
+* `linkramsize`: exclude `ramSize` from `mem.go`
+* `linkprintk`: exclude `printk` from `console.go`
+
+Executing
+=========
+
+Compiled binaries can be executed by converting Go binaries to emulate the
+Linux boot protocol and have the Pi firmware load and execute the binary as a
+Linux kernel.
+
+A minimal set of Raspberry Pi firmware must be present on the SD card to
+initialize the Raspberry Pi using the VideoCore GPU. The following minimum
+files are required:
+
+* bootcode.bin
+* fixup.dat
+* start.elf
+
+These files are available [here](https://github.com/raspberrypi/firmware/tree/master/boot).
+
+Direct
+------
+
+Linux kernels are expected to have executable code as the first bytes of the binary. The Go compiler
+does not natively support creating such binaries, so a stub is generated and pre-pended that will jump
+to the Go entrypoint. In this way, the Linux boot protocol is satisfied.
+
+The example projects (linked above) use the direct approach. The GNU cross-compiler toolchain is
+required. This method is in some ways more complex, but the Makefile code from the examples can be
+used as an example implementation.
+
+1. Build the Go ELF binary as normal
+2. Use `objcopy` from the GNU cross-compiler toolchain to convert the binary to 'bin' format
+3. Extract the entrypoint from the ELF format file
+4. Compile a stub that will jump to the real entrypoint
+5. Prepend the stub with sufficient padding for alignment
+6. Configure the Pi to treat the binary as the Linux kernel to load
+
+In the examples, this code performs steps 1-5:
+
+```sh
+$(CROSS_COMPILE)objcopy -j .text -j .rodata -j .shstrtab -j .typelink \
+    -j .itablink -j .gopclntab -j .go.buildinfo -j .go.module -j .noptrdata -j .data \
+    -j .bss --set-section-flags .bss=alloc,load,contents \
+    -j .noptrbss --set-section-flags .noptrbss=alloc,load,contents\
+    main -O binary main.o
+${CROSS_COMPILE}gcc -D ENTRY_POINT=`${CROSS_COMPILE}readelf -e main | grep Entry | sed 's/.*\(0x[a-zA-Z0-9]*\).*/\1/'` -c boot.S -o boot.o
+${CROSS_COMPILE}objcopy boot.o -O binary stub.o
+# Truncate pads the stub out to correctly align the binary
+# 32768 = 0x10000 (TEXT_START) - 0x8000 (Default kernel load address)
+truncate -s 32768 stub.o
+cat stub.o main.o > main.bin
+```
+
+The bootstrap code is something equivalent to this:
+
+```S
+    .global _boot
+
+    .text
+_boot:
+    LDR r1, addr
+    BX r1
+
+addr:
+    .word ENTRY_POINT
+```
+
+Direct: Configuring the firmware
+--------------------------------
+
+An example config.txt is:
+
+```txt
+enable_uart=1
+uart_2ndstage=1
+dtparam=uart0=on
+kernel=main.bin
+kernel_address=0x8000
+disable_commandline_tags=1
+core_freq=250
+```
+
+See <http://rpf.io/configtxt> for more configuration options.
+
+NOTE: Do not be tempted to set the kernel address to 0x0:
+
+1. TamaGo places critical data-structures at RAMSTART
+2. The Pi firmware parks all but 1 CPU core in wait-loops, controlled by bytes starting at 0x000000CC
+(see <https://github.com/raspberrypi/tools/blob/master/armstubs/armstub7.S>)
+
+Direct: Executing
+-----------------
+
+Copy the binary and config.txt to an SD card alongside the Pi firmware binaries and power-up the Pi.
+
+Debugging: Standard output
+==========================
+
+The standard output can be accessed through the UART pins on the Raspberry Pi.
+A 3.3v USB-to-serial cable, such as the [Adafruit USB to TTL Serial Cable](https://www.adafruit.com/product/954)
+can be used. Any suitable terminal emulator can be used to access standard output.
+
+The UART clock is based on the VPU clock in some Pi models, if the UART output
+appears corrupted, ensure the VPU clock frequency is fixed using `core_freq=250`
+in `config.txt`.
+
+NOTE: Go outputs 'LF' for newline, for best results use a terminal app capable
+of mapping 'LF' to 'CRLF' as-needed.
+
+License
+=======
+
+tamago | https://github.com/usbarmory/tamago  
+Copyright (c) The TamaGo Authors. All Rights Reserved.
+
+This project is distributed under the BSD-style license found in the
+[LICENSE](https://github.com/usbarmory/tamago/blob/master/LICENSE) file.
+
+The TamaGo logo is adapted from the Go gopher designed by Renee French and
+licensed under the Creative Commons 3.0 Attributions license. Go Gopher vector
+illustration by Hugo Arganda.

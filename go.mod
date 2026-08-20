@@ -2,6 +2,8 @@ module github.com/cpu/vitrum
 
 go 1.26.6
 
+replace github.com/usbarmory/tamago => ./third_party/tamago
+
 require (
 	filippo.io/torchwood v0.9.0
 	github.com/usbarmory/go-net v0.0.0-20260714134120-c2c964e7084c

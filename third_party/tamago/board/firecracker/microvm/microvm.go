@@ -1,0 +1,112 @@
+// Firecracker microvm support for tamago/amd64
+// https://github.com/usbarmory/tamago
+//
+// Copyright (c) The TamaGo Authors. All Rights Reserved.
+//
+// Use of this source code is governed by the license
+// that can be found in the LICENSE file.
+
+// Package microvm provides hardware initialization, automatically on import,
+// for a Firecracker microvm configured with one or more x86_64 cores.
+//
+// This package is only meant to be used with `GOOS=tamago GOARCH=amd64` as
+// supported by the TamaGo framework for bare metal Go, see
+// https://github.com/usbarmory/tamago.
+package microvm
+
+import (
+	"runtime/goos"
+	_ "unsafe"
+
+	"github.com/usbarmory/tamago/amd64"
+	"github.com/usbarmory/tamago/dma"
+	"github.com/usbarmory/tamago/kvm/pvclock"
+	"github.com/usbarmory/tamago/soc/intel/ioapic"
+	"github.com/usbarmory/tamago/soc/intel/uart"
+
+	"github.com/usbarmory/tamago/internal/reg"
+)
+
+const (
+	dmaSize  = 0x10000000 // 256MB
+	dmaStart = 0xc0000000 - dmaSize
+)
+
+// Peripheral registers
+const (
+	PIC_DATA = 0x21
+
+	// Communication port
+	COM1 = 0x3f8
+
+	// Intel I/O Programmable Interrupt Controller
+	IOAPIC0_BASE = 0xfec00000
+
+	// VirtIO Memory-mapped I/O
+	VIRTIO_MMIO_BASE = 0xc0000000
+
+	// VirtIO Networking
+	VIRTIO_NET0_BASE = VIRTIO_MMIO_BASE + 0x2000
+	VIRTIO_NET0_IRQ  = 6
+)
+
+// Peripheral instances
+var (
+	// CPU instance(s)
+	AMD64 = &amd64.CPU{
+		// required before Init()
+		TimerMultiplier: 1,
+	}
+
+	// I/O APIC
+	IOAPIC0 = &ioapic.IOAPIC{
+		Base: IOAPIC0_BASE,
+	}
+
+	// Serial port
+	UART0 = &uart.UART{
+		Index: 1,
+		Base:  COM1,
+	}
+)
+
+//go:linkname nanotime runtime/goos.Nanotime
+func nanotime() int64 {
+	return AMD64.GetTime()
+}
+
+// Init takes care of the lower level initialization triggered early in runtime
+// setup (post World start).
+//
+//go:linkname Init runtime/goos.Hwinit1
+func Init() {
+	// initialize CPU
+	AMD64.Init()
+
+	// initialize I/O APIC
+	IOAPIC0.Init()
+
+	// disable PIC interrupts
+	reg.Out8(PIC_DATA, 0xff)
+
+	// initialize serial console
+	UART0.Init()
+
+	goos.Exit = func(_ int32) {
+		AMD64.Reset()
+	}
+}
+
+func init() {
+	// trap CPU exceptions
+	AMD64.EnableExceptions()
+
+	// initialize APs
+	AMD64.InitSMP(-1)
+
+	// allocate global DMA region
+	dma.Init(dmaStart, dmaSize)
+
+	// initialize KVM pvclock as needed
+	pvclock.Init(AMD64)
+}
