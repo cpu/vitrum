@@ -1,13 +1,11 @@
 module github.com/cpu/vitrum
 
-go 1.26.6
-
-replace github.com/usbarmory/tamago => ./third_party/tamago
+go 1.27.0
 
 require (
 	filippo.io/torchwood v0.9.0
 	github.com/usbarmory/go-net v0.0.0-20260714134120-c2c964e7084c
-	github.com/usbarmory/tamago v1.26.6
+	github.com/usbarmory/tamago v1.27.1-0.20260825170449-b5e01530ebca
 	golang.org/x/crypto v0.55.0
 	golang.org/x/mod v0.40.0
 )
@@ -24,7 +22,7 @@ require (
 	golang.org/x/tools v0.49.0 // indirect
 	golang.org/x/vuln v1.7.0 // indirect
 	gvisor.dev/gvisor v0.0.0-20250911055229-61a46406f068 // indirect
-	honnef.co/go/tools v0.7.0 // indirect
+	honnef.co/go/tools v0.8.1 // indirect
 )
 
 tool (
