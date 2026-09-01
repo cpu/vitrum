@@ -5,6 +5,7 @@ go 1.27.0
 require (
 	filippo.io/torchwood v0.9.0
 	github.com/usbarmory/go-net v0.0.0-20260714134120-c2c964e7084c
+	github.com/usbarmory/rpmb v0.0.0-20260903082741-fa6a72563433
 	github.com/usbarmory/tamago v1.27.1-0.20260825170449-b5e01530ebca
 	golang.org/x/crypto v0.55.0
 	golang.org/x/mod v0.40.0

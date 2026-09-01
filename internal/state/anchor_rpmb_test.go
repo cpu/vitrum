@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/cpu/vitrum/internal/rpmb"
+	"github.com/cpu/vitrum/internal/rpmbtest"
 	"github.com/cpu/vitrum/internal/witness"
+	"github.com/usbarmory/rpmb"
 )
 
 func TestRPMBAnchorRoundTrip(t *testing.T) {
@@ -46,7 +47,7 @@ func TestRPMBAnchorMonotonic(t *testing.T) {
 
 func TestRPMBAnchorUnprogrammedCard(t *testing.T) {
 	key := bytes.Repeat([]byte{0xA7}, 32)
-	p, err := rpmb.Init(rpmb.NewFakeCard(), key, 0, false)
+	p, err := rpmb.InitWithTransport(rpmbtest.NewFakeCard(), key, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,9 +134,9 @@ func newTestRPMBAnchor(t *testing.T) *RPMBAnchor {
 	t.Helper()
 
 	key := bytes.Repeat([]byte{0xA7}, 32)
-	card := rpmb.NewFakeCard()
+	card := rpmbtest.NewFakeCard()
 
-	programmer, err := rpmb.Init(card, key, 0, false)
+	programmer, err := rpmb.InitWithTransport(card, key, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +144,7 @@ func newTestRPMBAnchor(t *testing.T) *RPMBAnchor {
 		t.Fatalf("ProgramKey: %v", err)
 	}
 
-	p, err := rpmb.Init(card, key, 0, false)
+	p, err := rpmb.InitWithTransport(card, key, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,9 +16,9 @@ import (
 
 	gnet "github.com/usbarmory/go-net"
 	usbnet "github.com/usbarmory/go-net/imx-usb"
+	"github.com/usbarmory/rpmb"
 
 	"github.com/cpu/vitrum/fw/internal/devicekey"
-	"github.com/cpu/vitrum/internal/rpmb"
 	"github.com/cpu/vitrum/internal/state"
 )
 
@@ -169,7 +169,7 @@ func newRPMBAnchor() (anchor state.Anchor, desc string, dev bool, err error) {
 	// writeDummy=false: an authenticated dummy write requires a programmed
 	// key; the unauthenticated counter read below probes programming state
 	// instead.
-	p, err := rpmb.Init(&rpmbCard{card: usbarmory.MMC}, rpmbKey, rpmbDummySector, false)
+	p, err := rpmb.InitWithTransport(usbarmory.MMC, rpmbKey, rpmbDummySector, false)
 	if err != nil {
 		return nil, "", dev, err
 	}
@@ -199,11 +199,3 @@ func (d *sdDevice) ReadBlocks(lba int64, buf []byte) error {
 func (d *sdDevice) WriteBlocks(lba int64, buf []byte) error {
 	return d.card.WriteBlocks(int(lba), buf)
 }
-
-// rpmbCard adapts *usdhc.USDHC to the rpmb.Transport interface.
-type rpmbCard struct {
-	card *usdhc.USDHC
-}
-
-func (c *rpmbCard) WriteRPMB(buf []byte, rel bool) error { return c.card.WriteRPMB(buf, rel) }
-func (c *rpmbCard) ReadRPMB(buf []byte) error            { return c.card.ReadRPMB(buf) }

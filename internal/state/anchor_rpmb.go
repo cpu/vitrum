@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/cpu/vitrum/internal/rpmb"
+	"github.com/usbarmory/rpmb"
 )
 
 // RPMBAnchor is an Anchor backed by an eMMC RPMB sector.

@@ -21,6 +21,6 @@ type Anchor interface {
 }
 
 // rpmbAnchorSector is the RPMB sector holding the generation. Sector 0 is
-// reserved as the CVE-2020-13799 dummy/invalidation block (see internal/rpmb
-// Init), so the anchor lives at sector 1.
+// reserved as the CVE-2020-13799 dummy/invalidation block, so the anchor lives
+// at sector 1.
 const rpmbAnchorSector = 1
