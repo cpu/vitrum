@@ -5,13 +5,14 @@ import (
 	"testing"
 
 	"github.com/cpu/vitrum/fw/internal/hab"
-	"github.com/cpu/vitrum/internal/rpmb"
+	"github.com/cpu/vitrum/internal/rpmbtest"
+	"github.com/usbarmory/rpmb"
 )
 
 func cleanHAB() hab.Status { return hab.Status{Status: "success", Config: "closed", State: "trusted"} }
 
 func TestProvisionRPMB(t *testing.T) {
-	card := rpmb.NewFakeCard()
+	card := rpmbtest.NewFakeCard()
 	status := provisionRPMB(card, true, cleanHAB(), func() ([]byte, error) {
 		return bytes.Repeat([]byte{0xa5}, 32), nil
 	})
@@ -33,7 +34,7 @@ func TestProvisionRPMBRefusesUnsafeStates(t *testing.T) {
 		{name: "HAB failure", secure: true, hab: hab.Status{Status: "success", Failures: 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			card := rpmb.NewFakeCard()
+			card := rpmbtest.NewFakeCard()
 			called := false
 			status := provisionRPMB(card, tc.secure, tc.hab, func() ([]byte, error) {
 				called = true
@@ -47,9 +48,9 @@ func TestProvisionRPMBRefusesUnsafeStates(t *testing.T) {
 }
 
 func TestProvisionRPMBRefusesProgrammedCard(t *testing.T) {
-	card := rpmb.NewFakeCard()
+	card := rpmbtest.NewFakeCard()
 	key := bytes.Repeat([]byte{0xa5}, 32)
-	p, err := rpmb.Init(card, key, 0, false)
+	p, err := rpmb.InitWithTransport(card, key, 0, false)
 	if err != nil || p.ProgramKey() != nil {
 		t.Fatal("fixture key programming failed")
 	}
@@ -60,8 +61,8 @@ func TestProvisionRPMBRefusesProgrammedCard(t *testing.T) {
 }
 
 func TestProvisionRPMBDiagnosesForeignKey(t *testing.T) {
-	card := rpmb.NewFakeCard()
-	p, err := rpmb.Init(card, bytes.Repeat([]byte{0x5a}, 32), 0, false)
+	card := rpmbtest.NewFakeCard()
+	p, err := rpmb.InitWithTransport(card, bytes.Repeat([]byte{0x5a}, 32), 0, false)
 	if err != nil || p.ProgramKey() != nil {
 		t.Fatal("fixture key programming failed")
 	}

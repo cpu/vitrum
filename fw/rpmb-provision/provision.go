@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/cpu/vitrum/fw/internal/hab"
-	"github.com/cpu/vitrum/internal/rpmb"
+	"github.com/usbarmory/rpmb"
 )
 
 type rpmbProvisionStatus struct {
@@ -32,7 +32,7 @@ func provisionRPMB(card rpmb.Transport, secure bool, boot hab.Status, derive fun
 		return status
 	}
 
-	probe, err := rpmb.Init(card, make([]byte, 32), 0, false)
+	probe, err := rpmb.InitWithTransport(card, make([]byte, 32), 0, false)
 	if err != nil {
 		return fail(fmt.Errorf("RPMB probe init: %w", err))
 	}
@@ -52,7 +52,7 @@ func provisionRPMB(card rpmb.Transport, secure bool, boot hab.Status, derive fun
 		if err != nil {
 			return fail(fmt.Errorf("RPMB key derivation for existing key: %w", err))
 		}
-		p, err := rpmb.Init(card, key, 0, false)
+		p, err := rpmb.InitWithTransport(card, key, 0, false)
 		if err != nil {
 			return fail(fmt.Errorf("RPMB init for existing key: %w", err))
 		}
@@ -80,7 +80,7 @@ func provisionRPMB(card rpmb.Transport, secure bool, boot hab.Status, derive fun
 	if err != nil {
 		return fail(fmt.Errorf("RPMB key derivation: %w", err))
 	}
-	p, err := rpmb.Init(card, key, 0, false)
+	p, err := rpmb.InitWithTransport(card, key, 0, false)
 	if err != nil {
 		return fail(fmt.Errorf("RPMB init: %w", err))
 	}

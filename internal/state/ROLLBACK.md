@@ -18,8 +18,9 @@ witness cosign a checkpoint inconsistent with one it has already cosigned.
   (no `K_state`).
 - **RPMB anchor**: a single eMMC RPMB sector holding the latest generation
   `g`, written with an authenticated RPMB write. Each such write advances the
-  eMMC's hardware-monotonic write counter (`internal/rpmb`). The RPMB
-  write counter cannot be decremented by any means available to the adversary
+  eMMC's hardware-monotonic write counter (`github.com/usbarmory/rpmb`). The
+  RPMB write counter cannot be decremented by any means available to the
+  adversary
   (it is enforced in the eMMC controller and keyed by `K_rpmb = KDF(HUK,
   "vitrum-rpmb-v1")`, which never leaves the device). This is the anchor the
   blob generation is cross-checked against.
@@ -110,8 +111,9 @@ was never used and the submitter gets an error.
 Deliberate deviation from prior art: armored-witness performs an
 authenticated dummy RPMB write at every boot (its CVE-2020-13799 mitigation,
 invalidating any adversary-held write request frame). vitrum skips it
-(`writeDummy=false` at `rpmb.Init`): every anchor write already verifies the
-response counter is exactly counter+1, which covers response replay, and a
+(`writeDummy=false` at `rpmb.InitWithTransport`): every anchor write already
+verifies the response counter is exactly counter+1, which covers response
+replay, and a
 held-back stale *request* frame replayed later can only advance the hardware
 write counter, pushing the system toward the halt rows above (anchor ahead),
 never toward a split view. Skipping the dummy write also lets the firmware
