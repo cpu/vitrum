@@ -18,8 +18,8 @@ github.com/usbarmory/rpmb v0.0.0-20260903082741-fa6a72563433 h1:vwzbV1xQzWwolG0a
 github.com/usbarmory/rpmb v0.0.0-20260903082741-fa6a72563433/go.mod h1:k6asGjUwhbf8FbWKbwL3nmdcz6oxzPYx3XhoMF19Is8=
 github.com/usbarmory/tamago v1.27.1-0.20260825170449-b5e01530ebca h1:2QMXZ1yDfbeb1pz5S804F9BV5lGCANJ1YAbCnDfiA5s=
 github.com/usbarmory/tamago v1.27.1-0.20260825170449-b5e01530ebca/go.mod h1:TooN7bhk0N4muZeXWHBz69iTTfZ/QHoOv7eOoKQCL1U=
-golang.org/x/crypto v0.55.0 h1:+KWHjbgOaAQ66dh/YlkZKHlz9ZUlq61AFirAR9ntP8M=
-golang.org/x/crypto v0.55.0/go.mod h1:uq0V9dE/fzQuJtbnL+2EhWOE63vo164FY8xqEnV9xis=
+golang.org/x/crypto v0.56.0 h1:GUh5Ii4J5jtcseSMiRqr1jXCNHoxjeV9Fmekc2oLy6Y=
+golang.org/x/crypto v0.56.0/go.mod h1:OMW5y6CY9l38uPLmxU6l6pwcXp1obtLo3e6gT7gQR2I=
 golang.org/x/exp/typeparams v0.0.0-20231108232855-2478ac86f678 h1:1P7xPZEwZMoBoz0Yze5Nx2/4pxj6nw9ZqHWXqP0iRgQ=
 golang.org/x/exp/typeparams v0.0.0-20231108232855-2478ac86f678/go.mod h1:AbB0pIl9nAr9wVwH+Z2ZpaocVmF5I4GyWCDIsVjR0bk=
 golang.org/x/mod v0.40.0 h1:hUv+3cXcdRHz08UmSiOob7sadHig73uo5bkXxQ/tvUs=
