@@ -92,8 +92,8 @@ func TestRollbackAttackRefusedEndToEnd(t *testing.T) {
 	if code, resp := submit(t, w1, cp3.N, proof, cp5Note); code != http.StatusOK {
 		t.Fatalf("cosign @5 = %d (%q), want 200", code, resp)
 	}
-	if g, _ := anchor.Anchor(); g != 2 {
-		t.Fatalf("anchor = %d, want 2 after two commits", g)
+	if a, _ := anchor.Anchor(); a.Generation != 2 {
+		t.Fatalf("anchor = %d, want 2 after two commits", a.Generation)
 	}
 
 	// The adversary restores the older storage snapshot (generation 1) and

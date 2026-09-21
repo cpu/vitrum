@@ -19,10 +19,8 @@ var ErrHalted = errors.New("state store halted: rollback or tamper detected")
 // back across boots.
 //
 // Each committed generation is written as an encrypted+authenticated blob to
-// the microSD A/B slots and anchored in a hardware-monotonic counter (eMMC
-// RPMB). At boot the blob generation is cross-checked against the anchor; a
-// stale blob (anchor ahead) or missing state (anchor non-zero, no blob) halts
-// the store. See ROLLBACK.md.
+// the microSD A/B slots. Its generation and digest are anchored in hardware-
+// monotonic storage (eMMC RPMB). See ROLLBACK.md.
 type RollbackStore struct {
 	mu     sync.Mutex
 	mem    *witness.MemStore
@@ -49,16 +47,16 @@ func Open(dev BlockDevice, offset int64, key []byte, anchor Anchor) (*RollbackSt
 		anchor: anchor,
 	}
 
-	gRPMB, err := anchor.Anchor()
+	anchored, err := anchor.Anchor()
 	if err != nil {
 		return nil, fmt.Errorf("state: reading anchor: %w", err)
 	}
 
-	states, gBlob, loadErr := Load(dev, offset, key)
+	blob, loadErr := load(dev, offset, key)
 	haveBlob := loadErr == nil
 
 	switch {
-	case !haveBlob && gRPMB == 0:
+	case !haveBlob && anchored.Generation == 0 && !anchored.Bound:
 		// Fresh unit: no committed generation, no state. Start empty.
 		log.Printf("state: fresh start (anchor 0, no blob)")
 		s.gen = 0
@@ -66,45 +64,97 @@ func Open(dev BlockDevice, offset int64, key []byte, anchor Anchor) (*RollbackSt
 	case !haveBlob:
 		// The anchor records a committed generation we cannot produce:
 		// storage was erased or corrupted. Treat as tamper.
-		s.halt("anchor at generation %d but no valid state blob (load: %v)", gRPMB, loadErr)
+		s.halt("anchor at generation %d but no valid state blob (load: %v)", anchored.Generation, loadErr)
 		return s, nil
 
-	case gBlob == gRPMB:
+	case blob.gen == anchored.Generation:
 		// Normal: blob matches the anchor.
-		s.gen = gBlob
-		if err := s.admit(states); err != nil {
+		if anchored.Bound && blob.hash != anchored.BlobHash {
+			s.halt("state blob at generation %d does not match anchored digest", blob.gen)
+			return s, nil
+		}
+		s.gen = blob.gen
+		if err := s.admit(blob.states); err != nil {
 			s.halt("invalid persisted state: %v", err)
 			return s, nil
 		}
+		if !anchored.Bound {
+			log.Printf("state: binding legacy anchor at generation %d", blob.gen)
+			if err := anchor.SetAnchor(anchorFor(blob)); err != nil {
+				s.halt("binding legacy anchor at generation %d failed: %v", blob.gen, err)
+				return s, nil
+			}
+		}
 
-	case gBlob == gRPMB+1:
+	case anchored.Generation != ^uint32(0) && blob.gen == anchored.Generation+1:
 		// Benign off-by-one: crash after the blob write, before the
 		// anchor advanced. No cosignature for this generation escaped
 		// (it is released only after anchoring). Re-anchor and adopt it.
-		s.gen = gBlob
-		if err := s.admit(states); err != nil {
+		s.gen = blob.gen
+		if err := s.admit(blob.states); err != nil {
 			s.halt("invalid persisted state: %v", err)
 			return s, nil
 		}
-		log.Printf("state: recovering interrupted commit (blob %d, anchor %d)", gBlob, gRPMB)
-		if err := anchor.SetAnchor(gBlob); err != nil {
-			s.halt("re-anchoring generation %d failed: %v", gBlob, err)
+		log.Printf("state: recovering interrupted commit (blob %d, anchor %d)", blob.gen, anchored.Generation)
+		if err := anchor.SetAnchor(anchorFor(blob)); err != nil {
+			s.halt("re-anchoring generation %d failed: %v", blob.gen, err)
 			return s, nil
 		}
 
-	case gBlob > gRPMB+1:
+	case anchored.Generation != ^uint32(0) && blob.gen > anchored.Generation+1:
 		// More than one un-anchored generation cannot occur in a normal
 		// sequence: tamper.
-		s.halt("state generation %d more than one ahead of anchor %d", gBlob, gRPMB)
+		s.halt("state generation %d more than one ahead of anchor %d", blob.gen, anchored.Generation)
 		return s, nil
 
-	default: // gBlob < gRPMB
+	default: // blob.gen < anchored.Generation
 		// Storage was rolled back to an older generation.
-		s.halt("rollback: state generation %d behind anchor %d", gBlob, gRPMB)
+		s.halt("rollback: state generation %d behind anchor %d", blob.gen, anchored.Generation)
 		return s, nil
 	}
 
+	if blob.legacy {
+		if err := s.upgradeLegacyBlob(blob.states); err != nil {
+			s.halt("upgrading legacy state blob failed: %v", err)
+			return s, nil
+		}
+	}
+
 	return s, nil
+}
+
+func anchorFor(blob loadedBlob) AnchorState {
+	return AnchorState{
+		Generation: blob.gen,
+		BlobHash:   blob.hash,
+		Bound:      true,
+	}
+}
+
+// upgradeLegacyBlob commits the admitted state as VITRUMW2 before serving.
+// This makes older signed firmware fail closed: it sees only the preceding
+// VITRUMW1 generation, behind the RPMB anchor.
+func (s *RollbackStore) upgradeLegacyBlob(states map[string][]byte) error {
+	if s.gen == ^uint32(0) {
+		return fmt.Errorf("generation counter exhausted")
+	}
+
+	next := s.gen + 1
+	log.Printf("state: upgrading legacy blob at generation %d to generation %d", s.gen, next)
+	hash, err := save(s.dev, s.off, s.key, next, states)
+	if err != nil {
+		return fmt.Errorf("persisting generation %d: %w", next, err)
+	}
+	if err := s.anchor.SetAnchor(AnchorState{
+		Generation: next,
+		BlobHash:   hash,
+		Bound:      true,
+	}); err != nil {
+		return fmt.Errorf("anchoring generation %d: %w", next, err)
+	}
+
+	s.gen = next
+	return nil
 }
 
 // admit validates every persisted note before restoring any state.
@@ -165,10 +215,9 @@ func (s *RollbackStore) All() map[string]witness.LogState {
 // release the cosignature (S3). The cosignature must not leave the device
 // before Put returns nil.
 //
-// A commit that fails after it may have touched the medium halts the store
-// (the generation is burned and must never be re-Sealed); a reboot resolves
-// the interrupted commit through the boot decision. See ROLLBACK.md, soft
-// failures.
+// A commit that fails after it may have touched the medium halts the store; a
+// reboot resolves the interrupted commit through the boot decision. See
+// ROLLBACK.md, soft failures.
 func (s *RollbackStore) Put(origin string, st witness.LogState) error {
 	return s.PutBatch(map[string]witness.LogState{origin: st})
 }
@@ -183,16 +232,15 @@ func (s *RollbackStore) PutBatch(updates map[string]witness.LogState) error {
 	}
 
 	if s.gen == ^uint32(0) {
-		// The anchor counter is exhausted. Halt rather than wrap, which
+		// The generation is exhausted. Halt rather than wrap, which
 		// would break monotonicity.
 		s.halt("generation counter exhausted")
 		return ErrHalted
 	}
 
-	// SECURITY INVARIANT: each generation value is written at most once,
-	// which is why a failed commit below halts instead of retrying `next`.
-	// ROLLBACK.md, soft failures, covers what reuse would break.
 	next := s.gen + 1
+	// A generation may be written more than once after reboot. Fresh nonces
+	// keep those Seals distinct; the RPMB digest selects the committed blob.
 
 	// Build the next state without mutating s.mem: RAM must never run
 	// ahead of the committed generation.
@@ -207,20 +255,23 @@ func (s *RollbackStore) PutBatch(updates map[string]witness.LogState) error {
 	// S1: persist the blob for the new generation. A failure before the
 	// slot write was issued (validation, oversize) leaves the medium
 	// untouched and `next` unused, so serving continues. Once the write
-	// itself fails the slot contents are unknown and `next` is burned,
-	// so halt.
-	if err := Save(s.dev, s.off, s.key, next, states); err != nil {
+	// itself fails the slot contents are unknown, so halt until reboot.
+	blobHash, err := save(s.dev, s.off, s.key, next, states)
+	if err != nil {
 		if errors.Is(err, ErrWriteFailed) {
 			s.halt("persisting generation %d failed: %v", next, err)
 		}
 		return fmt.Errorf("state: persist failed: %w", err)
 	}
 
-	// S2: advance the hardware anchor. No cosignature for `next` may be
-	// released until this succeeds. On failure the blob at `next` is on
-	// the medium and the generation is burned, so halt; a reboot resolves
-	// it through the boot decision (benign off-by-one).
-	if err := s.anchor.SetAnchor(next); err != nil {
+	// S2: bind the generation and exact blob in the hardware anchor. No
+	// cosignature for `next` may be released until this succeeds. On failure
+	// halt; a reboot resolves it through the boot decision.
+	if err := s.anchor.SetAnchor(AnchorState{
+		Generation: next,
+		BlobHash:   blobHash,
+		Bound:      true,
+	}); err != nil {
 		s.halt("anchoring generation %d failed: %v", next, err)
 		return fmt.Errorf("state: anchoring generation %d failed: %w", next, err)
 	}

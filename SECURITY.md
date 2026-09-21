@@ -27,7 +27,7 @@ The armory firmware is responsible for:
   two conflicting views of the same origin. A pending batch admits at most
   one distinct checkpoint per origin.
 - **Rollback protection.** State is an encrypted, authenticated blob
-  anchored to a hardware-monotonic counter
+  whose generation and digest are anchored in hardware-monotonic storage
   (See [`internal/state/ROLLBACK.md`](internal/state/ROLLBACK.md)). Restoring 
   an old storage snapshot halts the witness.
 - **Key confinement.** The signing key is RAM-only with no read-back path.

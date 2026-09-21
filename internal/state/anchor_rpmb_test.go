@@ -2,6 +2,7 @@ package state
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 
 	"github.com/cpu/vitrum/internal/rpmbtest"
@@ -12,16 +13,17 @@ import (
 func TestRPMBAnchorRoundTrip(t *testing.T) {
 	a := newTestRPMBAnchor(t)
 
-	if g, err := a.Anchor(); err != nil || g != 0 {
-		t.Fatalf("fresh anchor = %d, %v, want 0", g, err)
+	if got, err := a.Anchor(); err != nil || got.Generation != 0 || got.Bound {
+		t.Fatalf("fresh anchor = %+v, %v, want unbound generation 0", got, err)
 	}
 
 	for _, g := range []uint32{1, 2, 5} {
-		if err := a.SetAnchor(g); err != nil {
+		want := testAnchorState(g)
+		if err := a.SetAnchor(want); err != nil {
 			t.Fatalf("SetAnchor(%d): %v", g, err)
 		}
-		if got, err := a.Anchor(); err != nil || got != g {
-			t.Fatalf("Anchor after SetAnchor(%d) = %d, %v", g, got, err)
+		if got, err := a.Anchor(); err != nil || got != want {
+			t.Fatalf("Anchor after SetAnchor(%d) = %+v, %v", g, got, err)
 		}
 	}
 }
@@ -31,17 +33,17 @@ func TestRPMBAnchorRoundTrip(t *testing.T) {
 func TestRPMBAnchorMonotonic(t *testing.T) {
 	a := newTestRPMBAnchor(t)
 
-	if err := a.SetAnchor(2); err != nil {
+	if err := a.SetAnchor(testAnchorState(2)); err != nil {
 		t.Fatal(err)
 	}
 
 	for _, g := range []uint32{2, 1, 0} {
-		if err := a.SetAnchor(g); err == nil {
+		if err := a.SetAnchor(testAnchorState(g)); err == nil {
 			t.Errorf("SetAnchor(%d) over 2 succeeded, want monotonicity refusal", g)
 		}
 	}
-	if g, err := a.Anchor(); err != nil || g != 2 {
-		t.Fatalf("anchor after refused sets = %d, %v, want 2", g, err)
+	if got, err := a.Anchor(); err != nil || got.Generation != 2 {
+		t.Fatalf("anchor after refused sets = %+v, %v, want generation 2", got, err)
 	}
 }
 
@@ -81,8 +83,8 @@ func TestRollbackRefusedOverRPMBAnchor(t *testing.T) {
 	if err := s.Put(testOrigin, witness.LogState{Size: 8, Note: signed8}); err != nil {
 		t.Fatal(err)
 	}
-	if g, err := anchor.Anchor(); err != nil || g != 2 {
-		t.Fatalf("anchor = %d, %v, want 2 after two commits", g, err)
+	if got, err := anchor.Anchor(); err != nil || got.Generation != 2 {
+		t.Fatalf("anchor = %+v, %v, want generation 2 after two commits", got, err)
 	}
 
 	// Adversary restores the generation-1 snapshot and power-cycles; the
@@ -122,8 +124,55 @@ func TestBenignOffByOneOverRPMBAnchor(t *testing.T) {
 	if s.Generation() != 1 {
 		t.Errorf("recovered generation = %d, want 1", s.Generation())
 	}
-	if g, err := anchor.Anchor(); err != nil || g != 1 {
-		t.Errorf("anchor after recovery = %d, %v, want 1 (re-anchored)", g, err)
+	if got, err := anchor.Anchor(); err != nil || got.Generation != 1 {
+		t.Errorf("anchor after recovery = %+v, %v, want generation 1 (re-anchored)", got, err)
+	}
+}
+
+func TestLegacyStateMigrationOverRPMBAnchor(t *testing.T) {
+	signed := testSignedNote(t, 7)
+	dev := testDevice()
+	_, err := saveLegacy(dev, Offset, testKey, 1, map[string][]byte{testOrigin: signed})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := newTestRPMB(t)
+	legacy := make([]byte, anchorGenerationLen)
+	binary.BigEndian.PutUint32(legacy, 1)
+	if err := p.Write(rpmbAnchorSector, legacy); err != nil {
+		t.Fatal(err)
+	}
+	before, err := p.Counter(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := NewRPMBAnchor(p)
+
+	s, err := Open(dev, Offset, testKey, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Halted() {
+		t.Fatal("store halted while migrating legacy RPMB state")
+	}
+	got, err := anchor.Anchor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := load(dev, Offset, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Generation != 2 || !got.Bound || got.BlobHash != blob.hash || blob.legacy {
+		t.Fatalf("migrated anchor = %+v, blob = %+v, want generation 2 VITRUMW2 state", got, blob)
+	}
+	after, err := p.Counter(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before+2 {
+		t.Fatalf("migration consumed %d RPMB writes, want 2", after-before)
 	}
 }
 
@@ -131,6 +180,11 @@ func TestBenignOffByOneOverRPMBAnchor(t *testing.T) {
 // authentication key programmed, mirroring the production layout (dummy
 // sector 0, anchor sector 1).
 func newTestRPMBAnchor(t *testing.T) *RPMBAnchor {
+	t.Helper()
+	return NewRPMBAnchor(newTestRPMB(t))
+}
+
+func newTestRPMB(t *testing.T) *rpmb.RPMB {
 	t.Helper()
 
 	key := bytes.Repeat([]byte{0xA7}, 32)
@@ -149,5 +203,5 @@ func newTestRPMBAnchor(t *testing.T) *RPMBAnchor {
 		t.Fatal(err)
 	}
 
-	return NewRPMBAnchor(p)
+	return p
 }

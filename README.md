@@ -9,8 +9,8 @@ not to sign conflicting views of the same log. It uses the USB armory hardware
 to enforce this property:
 
 - each per-origin view lives in rollback-protected storage: an
-  authenticated blob on microSD, anchored to a monotonic eMMC RPMB
-  counter (see [internal/state/ROLLBACK.md](internal/state/ROLLBACK.md)).
+  authenticated blob on microSD whose generation and digest are anchored in
+  eMMC RPMB (see [internal/state/ROLLBACK.md](internal/state/ROLLBACK.md)).
 - the cosignature key exists only in RAM, uploaded at provisioning time,
   with no read-back path.
 - storage and SSH host keys are derived from the SoC's hardware-unique key.
