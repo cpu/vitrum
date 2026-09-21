@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 
@@ -10,37 +11,61 @@ import (
 // RPMBAnchor is an Anchor backed by an eMMC RPMB sector.
 //
 // SetAnchor performs an authenticated RPMB write, which the eMMC controller
-// gates on its hardware-monotonic write counter; the generation it stores can
-// therefore never be rolled back by an adversary with storage access. The
-// stored generation and the RPMB write counter advance together.
+// gates on its hardware-monotonic write counter; the record it stores can
+// therefore never be rolled back by an adversary with storage access.
 type RPMBAnchor struct {
 	p *rpmb.RPMB
 }
+
+const (
+	anchorGenerationLen = 4
+	anchorMagic         = "VITRUMA2"
+	anchorRecordLen     = anchorGenerationLen + len(anchorMagic) + len(BlobHash{})
+)
 
 // NewRPMBAnchor returns an anchor over p at the reserved anchor sector.
 func NewRPMBAnchor(p *rpmb.RPMB) *RPMBAnchor {
 	return &RPMBAnchor{p: p}
 }
 
-func (a *RPMBAnchor) Anchor() (uint32, error) {
-	buf := make([]byte, 4)
+func (a *RPMBAnchor) Anchor() (AnchorState, error) {
+	buf := make([]byte, anchorRecordLen)
 	if err := a.p.Read(rpmbAnchorSector, buf); err != nil {
-		return 0, fmt.Errorf("rpmb anchor read: %w", err)
+		return AnchorState{}, fmt.Errorf("rpmb anchor read: %w", err)
 	}
-	return binary.BigEndian.Uint32(buf), nil
+
+	state := AnchorState{Generation: binary.BigEndian.Uint32(buf)}
+	magic := buf[anchorGenerationLen : anchorGenerationLen+len(anchorMagic)]
+	switch {
+	case bytes.Equal(magic, []byte(anchorMagic)):
+		copy(state.BlobHash[:], buf[anchorGenerationLen+len(anchorMagic):])
+		state.Bound = true
+	case bytes.Equal(buf[anchorGenerationLen:], make([]byte, anchorRecordLen-anchorGenerationLen)):
+		// Legacy generation-only anchor.
+	default:
+		return AnchorState{}, fmt.Errorf("rpmb anchor has unknown format")
+	}
+
+	return state, nil
 }
 
-func (a *RPMBAnchor) SetAnchor(g uint32) error {
+func (a *RPMBAnchor) SetAnchor(next AnchorState) error {
 	cur, err := a.Anchor()
 	if err != nil {
 		return err
 	}
-	if g <= cur {
-		return fmt.Errorf("anchor not monotonic: setting %d over %d", g, cur)
+	if !next.Bound {
+		return fmt.Errorf("anchor state is not bound to a blob")
+	}
+	if next.Generation < cur.Generation ||
+		(next.Generation == cur.Generation && cur.Bound) {
+		return fmt.Errorf("anchor not monotonic: setting %d over %d", next.Generation, cur.Generation)
 	}
 
-	buf := make([]byte, 4)
-	binary.BigEndian.PutUint32(buf, g)
+	buf := make([]byte, anchorRecordLen)
+	binary.BigEndian.PutUint32(buf, next.Generation)
+	copy(buf[anchorGenerationLen:], anchorMagic)
+	copy(buf[anchorGenerationLen+len(anchorMagic):], next.BlobHash[:])
 	if err := a.p.Write(rpmbAnchorSector, buf); err != nil {
 		return fmt.Errorf("rpmb anchor write: %w", err)
 	}

@@ -143,6 +143,7 @@ type loadedBlob struct {
 	states map[string][]byte
 	gen    uint32
 	hash   BlobHash
+	legacy bool
 }
 
 func load(d BlockDevice, offset int64, key []byte) (loadedBlob, error) {
@@ -236,6 +237,7 @@ func loadSlot(d BlockDevice, offset int64, slot uint64, key []byte) (loadedBlob,
 		states: states,
 		gen:    gen,
 		hash:   sha256.Sum256(buf[:hLen+int(length)]),
+		legacy: legacy,
 	}, nil
 }
 
