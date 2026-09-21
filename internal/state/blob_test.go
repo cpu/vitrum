@@ -2,6 +2,8 @@ package state
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"maps"
@@ -72,6 +74,47 @@ func TestNewerSlotWins(t *testing.T) {
 	}
 }
 
+func TestSameGenerationUsesFreshNonce(t *testing.T) {
+	d := testDevice()
+
+	if err := Save(d, Offset, testKey, 1, testStates(1)); err != nil {
+		t.Fatal(err)
+	}
+	first := bytes.Clone(d.data[Offset+SlotSize+nonceOffset : Offset+SlotSize+headerLen])
+
+	if err := Save(d, Offset, testKey, 1, testStates(2)); err != nil {
+		t.Fatal(err)
+	}
+	second := d.data[Offset+SlotSize+nonceOffset : Offset+SlotSize+headerLen]
+
+	if bytes.Equal(first, second) {
+		t.Fatal("two seals at the same generation reused a nonce")
+	}
+}
+
+func TestLegacyBlobLoads(t *testing.T) {
+	d := testDevice()
+	want := testStates(1)
+
+	if _, err := saveLegacy(d, Offset, testKey, 1, want); err != nil {
+		t.Fatal(err)
+	}
+
+	got, gen, err := Load(d, Offset, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gen != 1 || !maps.EqualFunc(got, want, bytes.Equal) {
+		t.Fatalf("Load legacy blob = %v gen %d, want %v gen 1", got, gen, want)
+	}
+}
+
+func TestBlobHeaderSizePreserved(t *testing.T) {
+	if headerLen != legacyHeaderLen {
+		t.Fatalf("VITRUMW2 header is %d bytes, want legacy size %d", headerLen, legacyHeaderLen)
+	}
+}
+
 func TestTornWriteFallsBack(t *testing.T) {
 	d := testDevice()
 
@@ -113,7 +156,7 @@ func TestWrongKeyRejected(t *testing.T) {
 
 // TestRelabelRejected: an authentic blob at generation g cannot be presented
 // as a different generation. Rewriting only the header generation must fail
-// authentication (generation is bound into the AEAD and the nonce).
+// authentication (generation is bound into the AEAD).
 func TestRelabelRejected(t *testing.T) {
 	d := testDevice()
 	if err := Save(d, Offset, testKey, 1, testStates(1)); err != nil {
@@ -179,8 +222,8 @@ func TestDeviceTooSmall(t *testing.T) {
 func TestCorruptHeaders(t *testing.T) {
 	corruptions := map[string]func(d *memDevice){
 		"magic":  func(d *memDevice) { d.data[Offset] ^= 0xff },
-		"length": func(d *memDevice) { copy(d.data[Offset+magicLen+8:], []byte{0xff, 0xff, 0xff, 0xff}) },
-		"nonce":  func(d *memDevice) { d.data[Offset+magicLen+12] ^= 0xff },
+		"length": func(d *memDevice) { copy(d.data[Offset+magicLen+generationLen:], []byte{0xff, 0xff, 0xff, 0xff}) },
+		"nonce":  func(d *memDevice) { d.data[Offset+nonceOffset] ^= 0xff },
 	}
 
 	for name, corrupt := range corruptions {
@@ -202,6 +245,36 @@ func testStates(gen int) map[string][]byte {
 		"example.invalid/log-a": fmt.Appendf(nil, "note a generation %d\n", gen),
 		"example.invalid/log-b": fmt.Appendf(nil, "note b generation %d\n", gen),
 	}
+}
+
+func saveLegacy(d BlockDevice, offset int64, key []byte, gen uint32, states map[string][]byte) (BlobHash, error) {
+	aead, err := newAEAD(key, legacyNonceLen)
+	if err != nil {
+		return BlobHash{}, err
+	}
+	plaintext, err := encode(states)
+	if err != nil {
+		return BlobHash{}, err
+	}
+
+	nonce := deriveLegacyNonce(gen)
+	ciphertext := aead.Seal(nil, nonce, plaintext, genAAD(gen))
+	buf := make([]byte, SlotSize)
+	copy(buf, legacyMagic)
+	binary.LittleEndian.PutUint64(buf[magicLen:], uint64(gen))
+	binary.LittleEndian.PutUint32(buf[magicLen+legacyGenerationLen:], uint32(len(ciphertext)))
+	copy(buf[legacyNonceOffset:], nonce)
+	copy(buf[legacyHeaderLen:], ciphertext)
+
+	lba, err := slotLBA(d, offset, uint64(gen)%2)
+	if err != nil {
+		return BlobHash{}, err
+	}
+	if err := d.WriteBlocks(lba, buf); err != nil {
+		return BlobHash{}, err
+	}
+
+	return sha256.Sum256(buf[:legacyHeaderLen+len(ciphertext)]), nil
 }
 
 func testDevice() *memDevice {

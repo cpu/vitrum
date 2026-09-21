@@ -12,6 +12,8 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -33,22 +35,34 @@ const (
 	// (AES-256).
 	StateKeyLen = 32
 
-	magicLen  = 8
-	nonceLen  = 12                          // AES-GCM standard nonce
-	tagLen    = 16                          // AES-GCM tag
-	headerLen = magicLen + 8 + 4 + nonceLen // magic | gen | ciphertext-len | nonce
+	magicLen            = 8
+	generationLen       = 4
+	legacyGenerationLen = 8
+	lengthLen           = 4
+	legacyNonceLen      = 12
+	nonceLen            = 16
+	tagLen              = 16 // AES-GCM tag
+	nonceOffset         = magicLen + generationLen + lengthLen
+	legacyNonceOffset   = magicLen + legacyGenerationLen + lengthLen
+	headerLen           = nonceOffset + nonceLen
+	legacyHeaderLen     = legacyNonceOffset + legacyNonceLen
 )
 
-var magic = []byte("VITRUMW1") // W1: encrypted+authenticated, generation-tagged
+var (
+	legacyMagic = []byte("VITRUMW1")
+	magic       = []byte("VITRUMW2")
+)
+
+// BlobHash identifies an encoded state blob.
+type BlobHash [sha256.Size]byte
 
 // ErrNoState reports that no valid slot was found (fresh card, both slots
 // corrupt, or none authenticated under the current key).
 var ErrNoState = errors.New("no valid state found")
 
 // ErrWriteFailed marks a Save failure at or after the point where the slot
-// write was issued: the slot contents are unknown and the generation is
-// burned (ROLLBACK.md, soft failures). Errors before this point leave the
-// medium untouched and the generation unused.
+// write was issued: the slot contents are unknown. Errors before this point
+// leave the medium untouched.
 var ErrWriteFailed = errors.New("state: slot write failed")
 
 // BlockDevice is the storage interface Save and Load operate on.
@@ -64,46 +78,53 @@ type BlockDevice interface {
 // note) under key, tags the blob with generation gen, and writes it to the
 // slot selected by gen.
 //
-// The generation is uint32 to match the hardware anchor (the eMMC RPMB write
-// counter). Alternating slots by gen means a torn write can only destroy the
-// newer slot and the previous generation remains loadable. The generation is
-// bound into the AEAD as additional data, so a blob cannot be relabeled to a
-// different generation without detection.
+// The generation is uint32 to match the hardware anchor. Alternating slots by
+// gen means a torn write can only destroy the newer slot and the previous
+// generation remains loadable. The generation is bound into the AEAD as
+// additional data, so a blob cannot be relabeled without detection.
 func Save(d BlockDevice, offset int64, key []byte, gen uint32, states map[string][]byte) error {
-	aead, err := newAEAD(key)
+	_, err := save(d, offset, key, gen, states)
+	return err
+}
+
+func save(d BlockDevice, offset int64, key []byte, gen uint32, states map[string][]byte) (BlobHash, error) {
+	aead, err := newAEAD(key, nonceLen)
 	if err != nil {
-		return err
+		return BlobHash{}, err
 	}
 
 	plaintext, err := encode(states)
 	if err != nil {
-		return err
+		return BlobHash{}, err
 	}
 
-	nonce := deriveNonce(gen)
+	nonce := make([]byte, nonceLen)
+	if _, err := rand.Read(nonce); err != nil {
+		return BlobHash{}, fmt.Errorf("state nonce: %w", err)
+	}
 	ciphertext := aead.Seal(nil, nonce, plaintext, genAAD(gen))
 
 	if headerLen+len(ciphertext) > SlotSize {
-		return fmt.Errorf("state blob (%d bytes) exceeds slot size", len(ciphertext))
+		return BlobHash{}, fmt.Errorf("state blob (%d bytes) exceeds slot size", len(ciphertext))
 	}
 
 	buf := make([]byte, SlotSize)
 	copy(buf, magic)
-	binary.LittleEndian.PutUint64(buf[magicLen:], uint64(gen))
-	binary.LittleEndian.PutUint32(buf[magicLen+8:], uint32(len(ciphertext)))
-	copy(buf[magicLen+12:], nonce)
+	binary.LittleEndian.PutUint32(buf[magicLen:], gen)
+	binary.LittleEndian.PutUint32(buf[magicLen+generationLen:], uint32(len(ciphertext)))
+	copy(buf[nonceOffset:], nonce)
 	copy(buf[headerLen:], ciphertext)
 
 	lba, err := slotLBA(d, offset, uint64(gen)%2)
 	if err != nil {
-		return err
+		return BlobHash{}, err
 	}
 
 	if err := d.WriteBlocks(lba, buf); err != nil {
-		return fmt.Errorf("%w: %w", ErrWriteFailed, err)
+		return BlobHash{}, fmt.Errorf("%w: %w", ErrWriteFailed, err)
 	}
 
-	return nil
+	return sha256.Sum256(buf[:headerLen+len(ciphertext)]), nil
 }
 
 // Load reads both slots and returns the states and generation of the valid
@@ -111,80 +132,114 @@ func Save(d BlockDevice, offset int64, key []byte, gen uint32, states map[string
 //
 // It returns ErrNoState if neither slot is valid.
 func Load(d BlockDevice, offset int64, key []byte) (states map[string][]byte, gen uint32, err error) {
-	aead, err := newAEAD(key)
+	blob, err := load(d, offset, key)
 	if err != nil {
 		return nil, 0, err
 	}
+	return blob.states, blob.gen, nil
+}
 
+type loadedBlob struct {
+	states map[string][]byte
+	gen    uint32
+	hash   BlobHash
+}
+
+func load(d BlockDevice, offset int64, key []byte) (loadedBlob, error) {
+	if len(key) != StateKeyLen {
+		return loadedBlob{}, fmt.Errorf("state key is %d bytes, want %d", len(key), StateKeyLen)
+	}
+
+	var newest loadedBlob
 	var found bool
 
 	for slot := uint64(0); slot < 2; slot++ {
-		s, g, err := loadSlot(d, offset, slot, aead)
+		blob, err := loadSlot(d, offset, slot, key)
 		if err != nil {
 			continue
 		}
 
-		if !found || g > gen {
-			states, gen, found = s, g, true
+		if !found || blob.gen > newest.gen {
+			newest, found = blob, true
 		}
 	}
 
 	if !found {
-		return nil, 0, ErrNoState
+		return loadedBlob{}, ErrNoState
 	}
 
-	return states, gen, nil
+	return newest, nil
 }
 
-func loadSlot(d BlockDevice, offset int64, slot uint64, aead cipher.AEAD) (map[string][]byte, uint32, error) {
+func loadSlot(d BlockDevice, offset int64, slot uint64, key []byte) (loadedBlob, error) {
 	lba, err := slotLBA(d, offset, slot)
 	if err != nil {
-		return nil, 0, err
+		return loadedBlob{}, err
 	}
 
 	buf := make([]byte, SlotSize)
 	if err := d.ReadBlocks(lba, buf); err != nil {
-		return nil, 0, err
+		return loadedBlob{}, err
 	}
 
-	if !bytes.Equal(buf[:magicLen], magic) {
-		return nil, 0, errors.New("bad magic")
+	var gen uint32
+	var length uint32
+	var nonce []byte
+	var hLen int
+	var legacy bool
+	switch {
+	case bytes.Equal(buf[:magicLen], magic):
+		gen = binary.LittleEndian.Uint32(buf[magicLen:])
+		length = binary.LittleEndian.Uint32(buf[magicLen+generationLen:])
+		nonce = buf[nonceOffset:headerLen]
+		hLen = headerLen
+	case bytes.Equal(buf[:magicLen], legacyMagic):
+		legacy = true
+		gen64 := binary.LittleEndian.Uint64(buf[magicLen:])
+		if gen64 > math.MaxUint32 {
+			return loadedBlob{}, errors.New("generation out of range")
+		}
+		gen = uint32(gen64)
+		length = binary.LittleEndian.Uint32(buf[magicLen+legacyGenerationLen:])
+		nonce = buf[legacyNonceOffset:legacyHeaderLen]
+		hLen = legacyHeaderLen
+	default:
+		return loadedBlob{}, errors.New("bad magic")
 	}
 
-	gen64 := binary.LittleEndian.Uint64(buf[magicLen:])
-	if gen64 > math.MaxUint32 {
-		return nil, 0, errors.New("generation out of range")
-	}
-	gen := uint32(gen64)
-	length := binary.LittleEndian.Uint32(buf[magicLen+8:])
-
-	if int(length) < tagLen || int(length) > SlotSize-headerLen {
-		return nil, 0, errors.New("bad ciphertext length")
+	if int(length) < tagLen || int(length) > SlotSize-hLen {
+		return loadedBlob{}, errors.New("bad ciphertext length")
 	}
 
-	nonce := buf[magicLen+12 : headerLen]
-	ciphertext := buf[headerLen : headerLen+int(length)]
+	ciphertext := buf[hLen : hLen+int(length)]
 
-	// The nonce is derived deterministically from the generation; a slot
-	// whose stored nonce disagrees has a forged or corrupt header.
-	if !bytes.Equal(nonce, deriveNonce(gen)) {
-		return nil, 0, errors.New("nonce/generation mismatch")
+	if legacy && !bytes.Equal(nonce, deriveLegacyNonce(gen)) {
+		return loadedBlob{}, errors.New("nonce/generation mismatch")
+	}
+
+	aead, err := newAEAD(key, len(nonce))
+	if err != nil {
+		return loadedBlob{}, err
 	}
 
 	plaintext, err := aead.Open(nil, nonce, ciphertext, genAAD(gen))
 	if err != nil {
-		return nil, 0, fmt.Errorf("authentication failed: %w", err)
+		return loadedBlob{}, fmt.Errorf("authentication failed: %w", err)
 	}
 
 	states, err := decode(plaintext)
 	if err != nil {
-		return nil, 0, err
+		return loadedBlob{}, err
 	}
 
-	return states, gen, nil
+	return loadedBlob{
+		states: states,
+		gen:    gen,
+		hash:   sha256.Sum256(buf[:hLen+int(length)]),
+	}, nil
 }
 
-func newAEAD(key []byte) (cipher.AEAD, error) {
+func newAEAD(key []byte, nonceSize int) (cipher.AEAD, error) {
 	if len(key) != StateKeyLen {
 		return nil, fmt.Errorf("state key is %d bytes, want %d", len(key), StateKeyLen)
 	}
@@ -192,7 +247,7 @@ func newAEAD(key []byte) (cipher.AEAD, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cipher.NewGCM(block)
+	return cipher.NewGCMWithNonceSize(block, nonceSize)
 }
 
 // genAAD binds the generation into the AEAD so a valid blob cannot be
@@ -203,14 +258,9 @@ func genAAD(gen uint32) []byte {
 	return aad
 }
 
-// deriveNonce produces a unique GCM nonce per generation. The blob key is
-// device-bound and generations never repeat under a given key (they only
-// increase, and RollbackStore halts rather than re-Seal a generation whose
-// first write may have reached the medium), so a generation-derived nonce is
-// unique for every Seal an adversary can observe.
-func deriveNonce(gen uint32) []byte {
-	nonce := make([]byte, nonceLen)
-	copy(nonce, magic[:4]) // domain-separate from any other GCM use of this key
+func deriveLegacyNonce(gen uint32) []byte {
+	nonce := make([]byte, legacyNonceLen)
+	copy(nonce, legacyMagic[:4])
 	binary.LittleEndian.PutUint32(nonce[4:], gen)
 	return nonce
 }
