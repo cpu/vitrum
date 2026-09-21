@@ -35,8 +35,8 @@ func TestRollbackStoreRoundTrip(t *testing.T) {
 	if s.Generation() != 1 {
 		t.Errorf("generation = %d, want 1", s.Generation())
 	}
-	if g, _ := anchor.Anchor(); g != 1 {
-		t.Errorf("anchor = %d, want 1", g)
+	if a, _ := anchor.Anchor(); a.Generation != 1 {
+		t.Errorf("anchor = %d, want 1", a.Generation)
 	}
 
 	// A reboot: a new store over the same device + anchor restores state.
@@ -78,8 +78,8 @@ func TestRollbackStoreBatchIsOneGeneration(t *testing.T) {
 	if got := s.Generation(); got != 1 {
 		t.Fatalf("generation = %d, want 1", got)
 	}
-	if got, _ := anchor.Anchor(); got != 1 {
-		t.Fatalf("anchor = %d, want 1", got)
+	if got, _ := anchor.Anchor(); got.Generation != 1 {
+		t.Fatalf("anchor = %d, want 1", got.Generation)
 	}
 
 	s2, err := Open(dev, Offset, testKey, anchor)
@@ -114,8 +114,8 @@ func TestRollbackRefused(t *testing.T) {
 	if err := s.Put(testOrigin, witness.LogState{Size: 8, Note: signed8}); err != nil {
 		t.Fatal(err)
 	}
-	if g, _ := anchor.Anchor(); g != 2 {
-		t.Fatalf("anchor = %d, want 2", g)
+	if a, _ := anchor.Anchor(); a.Generation != 2 {
+		t.Fatalf("anchor = %d, want 2", a.Generation)
 	}
 
 	// Adversary restores the older storage snapshot (generation 1) and
@@ -159,8 +159,8 @@ func TestBenignOffByOne(t *testing.T) {
 	if s.Generation() != 1 {
 		t.Errorf("recovered generation = %d, want 1", s.Generation())
 	}
-	if g, _ := anchor.Anchor(); g != 1 {
-		t.Errorf("anchor after recovery = %d, want 1 (re-anchored)", g)
+	if a, _ := anchor.Anchor(); a.Generation != 1 {
+		t.Errorf("anchor after recovery = %d, want 1 (re-anchored)", a.Generation)
 	}
 	if _, ok := s.Get(testOrigin); !ok {
 		t.Error("recovered state not present")
@@ -172,7 +172,7 @@ func TestBenignOffByOne(t *testing.T) {
 func TestAnchorAheadNoBlob(t *testing.T) {
 	dev := testDevice()
 	anchor := NewMemAnchor()
-	if err := anchor.SetAnchor(5); err != nil {
+	if err := anchor.SetAnchor(testAnchorState(5)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -191,7 +191,7 @@ func TestImpossibleGapHalts(t *testing.T) {
 	signed := testSignedNote(t, 7)
 	dev := testDevice()
 	anchor := NewMemAnchor()
-	if err := anchor.SetAnchor(1); err != nil {
+	if err := anchor.SetAnchor(testAnchorState(1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := Save(dev, Offset, testKey, 3, map[string][]byte{testOrigin: signed}); err != nil {
@@ -215,12 +215,12 @@ type failAnchor struct {
 	sets      int
 }
 
-func (a *failAnchor) SetAnchor(g uint32) error {
+func (a *failAnchor) SetAnchor(next AnchorState) error {
 	a.sets++
 	if a.sets > a.failAfter {
 		return fmt.Errorf("injected anchor failure")
 	}
-	return a.MemAnchor.SetAnchor(g)
+	return a.MemAnchor.SetAnchor(next)
 }
 
 // TestPutRamNeverAheadOnAnchorFailure: if the blob write (S1) succeeds but the
@@ -248,17 +248,15 @@ func TestPutRamNeverAheadOnAnchorFailure(t *testing.T) {
 	if s.Generation() != 0 {
 		t.Errorf("generation = %d, want 0 (no commit)", s.Generation())
 	}
-	if g, _ := anchor.Anchor(); g != 0 {
-		t.Errorf("anchor = %d, want 0", g)
+	if a, _ := anchor.Anchor(); a.Generation != 0 {
+		t.Errorf("anchor = %d, want 0", a.Generation)
 	}
 }
 
-// TestAnchorFailureHaltsNoGenerationReuse: a commit whose anchor advance (S2)
-// fails leaves a blob at the burned generation on the medium, so the store
-// must halt rather than let a resubmission re-Seal that generation with
-// different content (ROLLBACK.md, soft failures). A reboot recovers the
-// interrupted commit via the benign off-by-one.
-func TestAnchorFailureHaltsNoGenerationReuse(t *testing.T) {
+// TestAnchorFailureHaltsUntilReboot: the durable result of an anchor failure
+// is unknown, so the running store halts. A reboot recovers the interrupted
+// commit via the benign off-by-one.
+func TestAnchorFailureHaltsUntilReboot(t *testing.T) {
 	signed := testSignedNote(t, 7)
 	dev := testDevice()
 	anchor := &failAnchor{MemAnchor: NewMemAnchor(), failAfter: 0}
@@ -272,7 +270,7 @@ func TestAnchorFailureHaltsNoGenerationReuse(t *testing.T) {
 		t.Fatal("Put succeeded despite anchor failure")
 	}
 	if !s.Halted() {
-		t.Fatal("store not halted after S2 failure left a blob at the burned generation")
+		t.Fatal("store not halted after S2 failure")
 	}
 
 	// A retry (possibly with different content) must be refused, not
@@ -299,8 +297,182 @@ func TestAnchorFailureHaltsNoGenerationReuse(t *testing.T) {
 	if !ok || got.Size != 7 || !bytes.Equal(got.Note, signed) {
 		t.Fatalf("recovered state = %+v ok=%v, want the size-7 commit", got, ok)
 	}
-	if g, _ := anchor.Anchor(); g != 1 {
-		t.Errorf("anchor after recovery = %d, want 1", g)
+	if a, _ := anchor.Anchor(); a.Generation != 1 {
+		t.Errorf("anchor after recovery = %d, want 1", a.Generation)
+	}
+}
+
+// TestInterruptedGenerationCannotReplaceCommittedState covers the attack where
+// an adversary hides a blob written before an anchor failure, lets the device
+// commit different contents at the same generation, then restores the first
+// authentic blob.
+func TestInterruptedGenerationCannotReplaceCommittedState(t *testing.T) {
+	dev := testDevice()
+	anchor := &failAnchor{MemAnchor: NewMemAnchor(), failAfter: 1}
+
+	s, err := Open(dev, Offset, testKey, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(testOrigin, witness.LogState{Size: 7, Note: testSignedNote(t, 7)}); err != nil {
+		t.Fatal(err)
+	}
+	committed := dev.snapshot()
+
+	if err := s.Put(testOrigin, witness.LogState{Size: 8, Note: testSignedNote(t, 8)}); err == nil {
+		t.Fatal("Put succeeded despite anchor failure")
+	}
+	interrupted := dev.snapshot()
+
+	// Hide the interrupted generation-2 blob and reboot at the still-anchored
+	// generation 1. The replacement generation 2 contains different state.
+	dev.restore(committed)
+	anchor.failAfter = 99
+	s, err = Open(dev, Offset, testKey, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Halted() {
+		t.Fatal("store halted after the interrupted blob was removed")
+	}
+	if err := s.Put(testOrigin, witness.LogState{Size: 9, Note: testSignedNote(t, 9)}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restoring the first authentic generation-2 blob must not replace the
+	// different generation-2 state the anchor committed.
+	dev.restore(interrupted)
+	s, err = Open(dev, Offset, testKey, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Halted() {
+		t.Fatal("store accepted a different authentic blob at the anchored generation")
+	}
+}
+
+func TestLegacyStateMigrates(t *testing.T) {
+	dev := testDevice()
+	want := testSignedNote(t, 7)
+	_, err := saveLegacy(dev, Offset, testKey, 1, map[string][]byte{testOrigin: want})
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := NewMemAnchor()
+	anchor.state.Generation = 1
+
+	s, err := Open(dev, Offset, testKey, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Halted() {
+		t.Fatal("store halted while migrating legacy state")
+	}
+	got, ok := s.Get(testOrigin)
+	if !ok || !bytes.Equal(got.Note, want) {
+		t.Fatalf("migrated state = %+v ok=%v, want original note", got, ok)
+	}
+	if s.Generation() != 2 {
+		t.Fatalf("migrated generation = %d, want 2", s.Generation())
+	}
+	anchored, err := anchor.Anchor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := load(dev, Offset, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if anchored.Generation != 2 || !anchored.Bound || anchored.BlobHash != blob.hash || blob.legacy {
+		t.Fatalf("migrated anchor = %+v, blob = %+v, want generation 2 VITRUMW2 state", anchored, blob)
+	}
+	// An old reader ignores VITRUMW2 and can only recover this preceding
+	// VITRUMW1 blob, whose generation is now behind the anchor.
+	previous, err := loadSlot(dev, Offset, 1, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if previous.gen != 1 || !previous.legacy {
+		t.Fatalf("previous blob = %+v, want generation 1 VITRUMW1 state", previous)
+	}
+}
+
+func TestLegacyInterruptedStateMigrates(t *testing.T) {
+	dev := testDevice()
+	_, err := saveLegacy(dev, Offset, testKey, 1, map[string][]byte{
+		testOrigin: testSignedNote(t, 7),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := NewMemAnchor()
+
+	s, err := Open(dev, Offset, testKey, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Halted() || s.Generation() != 2 {
+		t.Fatalf("interrupted migration halted=%v generation=%d, want false, 2", s.Halted(), s.Generation())
+	}
+	anchored, err := anchor.Anchor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := load(dev, Offset, testKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if anchored.Generation != 2 || !anchored.Bound || anchored.BlobHash != blob.hash || blob.legacy {
+		t.Fatalf("migrated anchor = %+v, blob = %+v, want generation 2 VITRUMW2 state", anchored, blob)
+	}
+}
+
+func TestLegacyMigrationFailureHalts(t *testing.T) {
+	dev := testDevice()
+	if _, err := saveLegacy(dev, Offset, testKey, 1, map[string][]byte{
+		testOrigin: testSignedNote(t, 7),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mem := NewMemAnchor()
+	mem.state.Generation = 1
+	anchor := &failAnchor{MemAnchor: mem, failAfter: 0}
+
+	s, err := Open(dev, Offset, testKey, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Halted() {
+		t.Fatal("store served without binding the legacy anchor")
+	}
+}
+
+func TestLegacyFormatUpgradeFailureHaltsAndRecovers(t *testing.T) {
+	dev := testDevice()
+	if _, err := saveLegacy(dev, Offset, testKey, 1, map[string][]byte{
+		testOrigin: testSignedNote(t, 7),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mem := NewMemAnchor()
+	mem.state.Generation = 1
+	anchor := &failAnchor{MemAnchor: mem, failAfter: 1}
+
+	s, err := Open(dev, Offset, testKey, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Halted() {
+		t.Fatal("store served after the VITRUMW2 anchor write failed")
+	}
+
+	anchor.failAfter = 99
+	s, err = Open(dev, Offset, testKey, anchor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Halted() || s.Generation() != 2 {
+		t.Fatalf("upgrade recovery halted=%v generation=%d, want false, 2", s.Halted(), s.Generation())
 	}
 }
 
@@ -431,8 +603,10 @@ func TestCounterExhaustionHalts(t *testing.T) {
 // has no basis for the rollback decision.
 type brokenAnchor struct{}
 
-func (brokenAnchor) Anchor() (uint32, error) { return 0, fmt.Errorf("injected anchor read failure") }
-func (brokenAnchor) SetAnchor(uint32) error  { return nil }
+func (brokenAnchor) Anchor() (AnchorState, error) {
+	return AnchorState{}, fmt.Errorf("injected anchor read failure")
+}
+func (brokenAnchor) SetAnchor(AnchorState) error { return nil }
 
 func TestOpenAnchorReadFailure(t *testing.T) {
 	if _, err := Open(testDevice(), Offset, testKey, brokenAnchor{}); err == nil {
@@ -459,10 +633,11 @@ func TestInvalidPersistedNotesHalt(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dev := testDevice()
 			anchor := NewMemAnchor()
-			if err := Save(dev, Offset, testKey, 1, states); err != nil {
+			hash, err := save(dev, Offset, testKey, 1, states)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if err := anchor.SetAnchor(1); err != nil {
+			if err := anchor.SetAnchor(AnchorState{Generation: 1, BlobHash: hash, Bound: true}); err != nil {
 				t.Fatal(err)
 			}
 
@@ -499,8 +674,8 @@ func TestInvalidInterruptedStateDoesNotReanchor(t *testing.T) {
 	if !s.Halted() {
 		t.Fatal("store did not halt on invalid interrupted state")
 	}
-	if got, _ := anchor.Anchor(); got != 0 {
-		t.Fatalf("anchor advanced to %d for invalid state", got)
+	if got, _ := anchor.Anchor(); got.Generation != 0 {
+		t.Fatalf("anchor advanced to %d for invalid state", got.Generation)
 	}
 }
 
@@ -515,10 +690,11 @@ func TestAdmitsUnverifiedNotes(t *testing.T) {
 
 	// Persist a note whose text was altered after signing, at generation 1.
 	altered := bytes.Replace(signed, []byte("\n7\n"), []byte("\n8\n"), 1)
-	if err := Save(dev, Offset, testKey, 1, map[string][]byte{testOrigin: altered}); err != nil {
+	hash, err := save(dev, Offset, testKey, 1, map[string][]byte{testOrigin: altered})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := anchor.SetAnchor(1); err != nil {
+	if err := anchor.SetAnchor(AnchorState{Generation: 1, BlobHash: hash, Bound: true}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -563,6 +739,12 @@ func testSignedNoteFor(t *testing.T, origin string, size int64) []byte {
 }
 
 const testOrigin = "test.vitrum.invalid/log"
+
+func testAnchorState(gen uint32) AnchorState {
+	var hash BlobHash
+	hash[0] = byte(gen)
+	return AnchorState{Generation: gen, BlobHash: hash, Bound: true}
+}
 
 // zeroReader is a deterministic io.Reader so tests never require committed key
 // material.
