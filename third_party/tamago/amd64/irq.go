@@ -1,0 +1,169 @@
+// AMD64 processor support
+// https://github.com/usbarmory/tamago
+//
+// Copyright (c) The TamaGo Authors. All Rights Reserved.
+//
+// Use of this source code is governed by the license
+// that can be found in the LICENSE file.
+
+package amd64
+
+import (
+	"bytes"
+	"encoding/binary"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/usbarmory/tamago/amd64/lapic"
+	"github.com/usbarmory/tamago/dma"
+)
+
+// Interrupt Gate Descriptor Attributes
+const (
+	InterruptGate = 0b10001110
+	TrapGate      = 0b10001111
+)
+
+// IRQ handling jump table constants
+const (
+	callSize = 5
+	vectors  = 256
+)
+
+const (
+	// IRQ_SIGNAL represents the `os/signal` used to signal and service
+	// interrupts.
+	IRQ_SIGNAL = syscall.SIGTRAP
+
+	// IRQ_WAKEUP represents the interrupt vector raised by [CPU.SetAlarm],
+	// it cannot be serviced by [CPU.ServiceInterrupt] as the IRQ is
+	// handled internally to resume halted processors.
+	IRQ_WAKEUP = 255
+)
+
+var (
+	// IRQ handling jump table variables
+	idtAddr        uintptr
+	irqHandlerAddr uintptr
+
+	// IRQ handling goroutine and state
+	irqHandling bool
+	irqLock     bool
+)
+
+// defined in irq.s
+func load_idt() (idt uintptr, irqHandler uintptr)
+func wfi()
+
+//go:nosplit
+func irqHandler()
+
+// GateDescriptor represents an IDT Gate descriptor
+// (Intel® 64 and IA-32 Architectures Software Developer’s Manual
+// Volume 3A - 6.14.1 64-Bit Mode IDT).
+type GateDescriptor struct {
+	Offset1         uint16
+	SegmentSelector uint16
+	IST             uint8
+	Attributes      uint8
+	Offset2         uint16
+	Offset3         uint32
+	Reserved        uint32
+}
+
+// Bytes converts the descriptor structure to byte array format.
+func (d *GateDescriptor) Bytes() []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.LittleEndian, d)
+	return buf.Bytes()
+}
+
+// SetOffset sets the address of the handling procedure entry point.
+func (d *GateDescriptor) SetOffset(addr uintptr) {
+	d.Offset1 = uint16(addr & 0xffff)
+	d.Offset2 = uint16(addr >> 16 & 0xffff)
+	d.Offset3 = uint32(addr >> 32)
+}
+
+func setIDT(start int, end int) {
+	if idtAddr == 0 || irqHandlerAddr == 0 {
+		idtAddr, irqHandlerAddr = load_idt()
+	}
+
+	desc := &GateDescriptor{
+		SegmentSelector: 1 << 3,
+		Attributes:      InterruptGate,
+	}
+
+	gateSize := len(desc.Bytes())
+	idtSize := gateSize * vectors
+
+	r, err := dma.NewRegion(uint(idtAddr), idtSize, true)
+
+	if err != nil {
+		panic(err)
+	}
+
+	addr, idt := r.Reserve(idtSize, 0)
+	defer r.Release(addr)
+
+	for i := start; i <= end; i++ {
+		if i == vectors {
+			break
+		}
+
+		// set ISR to irqHandler.abi0 + vector offset
+		off := irqHandlerAddr + uintptr(i*callSize)
+		desc.SetOffset(off)
+		copy(idt[i*gateSize:], desc.Bytes())
+	}
+}
+
+// ClearInterrupt signals the end of an interrupt handling routine.
+func (cpu *CPU) ClearInterrupt() {
+	if cpu.init == 0 {
+		cpu.LAPIC.ClearInterrupt()
+		irqLock = false
+		return
+	}
+
+	// ensure time.Sleep has been reached by parent
+	for !signal.Waiting() {
+		// stay on this M
+	}
+
+	// ensure we are not interrupting ·handleInterrupt on BSP
+	for irqHandling {
+		// stay on this M
+	}
+
+	// IRQs are always handled by the BSP
+	cpu.LAPIC.IPI(0, 0, lapic.ICR_DLV_NMI)
+}
+
+// WaitInterrupt suspends execution on the current processor until an interrupt
+// is received.
+func (cpu *CPU) WaitInterrupt() {
+	wfi()
+}
+
+// ServiceInterrupts puts the calling goroutine in wait state, its execution is
+// resumed when a user defined interrupt is received, an argument function can
+// be set for servicing.
+func (cpu *CPU) ServiceInterrupts(isr func(int)) {
+	if isr == nil {
+		isr = func(_ int) { return }
+	}
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, IRQ_SIGNAL)
+
+	for {
+		// To avoid losing interrupts, service completion must happen
+		// only after we are sleeping.
+		go cpu.ClearInterrupt()
+		<-c
+		isr(currentVectorNumber())
+	}
+}

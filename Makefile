@@ -65,6 +65,7 @@ imx: $(ELF).imx
 
 test:
 	go test ./...
+	cd third_party/tamago && go test ./soc/nxp/usdhc/internal/blockcount
 
 staticcheck:
 	go tool staticcheck ./...

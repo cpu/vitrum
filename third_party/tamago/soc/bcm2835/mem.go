@@ -1,0 +1,18 @@
+// BCM2835 SoC support
+// https://github.com/usbarmory/tamago
+//
+// Copyright (c) The TamaGo Authors. All Rights Reserved.
+//
+// Use of this source code is governed by the license
+// that can be found in the LICENSE file.
+
+//go:build !linkramstart
+
+package bcm2835
+
+import (
+	_ "unsafe"
+)
+
+//go:linkname ramStart runtime/goos.RamStart
+var ramStart uint32 = 0x00100000
