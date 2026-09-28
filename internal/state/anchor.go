@@ -1,7 +1,7 @@
 package state
 
-// AnchorState is the rollback-protected state stored in RPMB. Legacy anchors
-// contain only Generation; Bound is false until Open migrates them.
+// AnchorState is the rollback-protected state stored in RPMB. Bound is false
+// only for a fresh, all-zero record.
 type AnchorState struct {
 	Generation uint32
 	BlobHash   BlobHash
@@ -22,9 +22,8 @@ type Anchor interface {
 	Anchor() (AnchorState, error)
 
 	// SetAnchor records next as the latest committed state. Its generation
-	// must advance, except that a legacy unbound record may be bound at the
-	// same generation during migration. The implementation advances the
-	// underlying hardware counter as a side effect.
+	// must advance. The implementation advances the underlying hardware
+	// counter as a side effect.
 	SetAnchor(next AnchorState) error
 }
 

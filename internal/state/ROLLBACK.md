@@ -22,7 +22,8 @@ witness cosign a checkpoint inconsistent with one it has already cosigned.
   write counter (`github.com/usbarmory/rpmb`). The counter cannot be decremented
   by any means available to the adversary (it is enforced in the eMMC
   controller and keyed by `K_rpmb = KDF(HUK, "vitrum-rpmb-v1")`, which never
-  leaves the device).
+  leaves the device). A completely zero record represents a fresh unit; every
+  initialized record uses the `VITRUMA2` encoding.
 
 `K_state` and `K_rpmb` are derived from the SoC hardware-unique key (CAAM/DCP)
 with distinct diversifiers. Pre-fuse, HUK derivation uses a non-unique test
@@ -132,52 +133,37 @@ current one-write sequence safe.
 ## Boot decision (pseudocode)
 
 ```
-(g_rpmb, h_rpmb, legacy) := rpmb.Anchor() // authenticated, hardware-monotonic
+fresh, g_rpmb, h_rpmb := rpmb.Anchor() // authenticated, hardware-monotonic
 blob, g_blob, h_blob, ok := loadNewestValidSlot()
 
 switch {
-case !ok && g_rpmb == 0 && legacy:         start empty (fresh unit)
-case !ok:                                  HALT: committed anchor but no state
-case g_blob == g_rpmb && legacy:           bind h_blob (migration)
-case g_blob == g_rpmb && h_blob == h_rpmb: serve (normal)
-case g_blob == g_rpmb:                     HALT: same-generation replacement
-case g_blob == g_rpmb + 1:                 anchor (g_blob, h_blob), then serve
-case g_blob > g_rpmb + 1:                  HALT: impossible gap
-default /* g_blob < g_rpmb */:             HALT: rollback
+case !ok && fresh:                          start empty (fresh unit)
+case !ok:                                   HALT: committed anchor but no state
+case !fresh && g_blob == g_rpmb &&
+     h_blob == h_rpmb:                      serve (normal)
+case g_blob == g_rpmb:                      HALT: missing/mismatched binding
+case g_rpmb != max && g_blob == g_rpmb + 1: anchor (g_blob, h_blob), then serve
+case g_rpmb != max && g_blob > g_rpmb + 1:  HALT: impossible gap
+default /* g_blob < g_rpmb */:              HALT: rollback
 }
-
-if blob is VITRUMW1: commit the same state as VITRUMW2 at g_blob+1, then serve
 ```
 
 HALT means refusing every add-checkpoint.
 
-## Legacy migration
+## Accepted formats
 
-Blob format `VITRUMW1` used a generation-derived 96-bit nonce, and the original
-RPMB record contained only the four-byte generation. `VITRUMW2` uses a fresh
-128-bit nonce without increasing the 32-byte header. The new reader accepts
-both blob formats. When it opens a legacy generation-only anchor with a valid
-blob at the same generation, it performs one authenticated RPMB write at that
-same generation to bind the blob digest before serving. An interrupted legacy
-commit one generation ahead is validated and anchored directly. It then
-commits the same logical state as VITRUMW2 at the next generation and anchors
-that blob before serving. This second step makes a downgrade to old signed
-firmware fail closed: the old reader sees only the preceding VITRUMW1 blob,
-which is behind the RPMB generation.
-
-This migration preserves the provisioned RPMB key, device state key, witness
-key, HAB fuses, and secure-boot signing keys. It normally consumes two RPMB
-counter values on the first boot of existing state: one to bind the legacy
-blob and one to anchor its VITRUMW2 successor. Downgrading afterward fails
-closed because old firmware cannot read `VITRUMW2` blobs.
+The blob reader accepts only `VITRUMW2`, with its 32-byte header and fresh
+128-bit nonce. The RPMB reader accepts only a completely zero fresh-unit record
+or a `VITRUMA2` record containing the generation and exact blob digest. Any
+other record, including a nonzero generation-only value, is unsupported or
+corrupt and prevents the witness service from booting.
 
 ## Counter budget
 
 The RPMB write counter is uint32. A non-empty checkpoint pool consumes one
 increment, regardless of how many origins it contains; empty periods consume
-none. Migrating existing legacy state normally consumes two additional
-increments. The 200 ms sequencing period caps sustained scheduling at five
-commits per second, so 2³² increments last about 27 years at the absolute
-maximum continuous rate (or about 136 years at one increment per second). A
-slow pass can be followed immediately by a pending ticker event; the period is
-not a minimum delay between individual writes.
+none. The 200 ms sequencing period caps sustained scheduling at five commits
+per second, so 2³² increments last about 27 years at the absolute maximum
+continuous rate (or about 136 years at one increment per second). A slow pass
+can be followed immediately by a pending ticker event; the period is not a
+minimum delay between individual writes.

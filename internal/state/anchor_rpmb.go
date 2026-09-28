@@ -34,17 +34,17 @@ func (a *RPMBAnchor) Anchor() (AnchorState, error) {
 		return AnchorState{}, fmt.Errorf("rpmb anchor read: %w", err)
 	}
 
+	if bytes.Equal(buf, make([]byte, anchorRecordLen)) {
+		return AnchorState{}, nil
+	}
+
 	state := AnchorState{Generation: binary.BigEndian.Uint32(buf)}
 	magic := buf[anchorGenerationLen : anchorGenerationLen+len(anchorMagic)]
-	switch {
-	case bytes.Equal(magic, []byte(anchorMagic)):
-		copy(state.BlobHash[:], buf[anchorGenerationLen+len(anchorMagic):])
-		state.Bound = true
-	case bytes.Equal(buf[anchorGenerationLen:], make([]byte, anchorRecordLen-anchorGenerationLen)):
-		// Legacy generation-only anchor.
-	default:
+	if !bytes.Equal(magic, []byte(anchorMagic)) {
 		return AnchorState{}, fmt.Errorf("rpmb anchor has unknown format")
 	}
+	copy(state.BlobHash[:], buf[anchorGenerationLen+len(anchorMagic):])
+	state.Bound = true
 
 	return state, nil
 }
@@ -57,8 +57,7 @@ func (a *RPMBAnchor) SetAnchor(next AnchorState) error {
 	if !next.Bound {
 		return fmt.Errorf("anchor state is not bound to a blob")
 	}
-	if next.Generation < cur.Generation ||
-		(next.Generation == cur.Generation && cur.Bound) {
+	if next.Generation <= cur.Generation {
 		return fmt.Errorf("anchor not monotonic: setting %d over %d", next.Generation, cur.Generation)
 	}
 

@@ -69,7 +69,11 @@ func Open(dev BlockDevice, offset int64, key []byte, anchor Anchor) (*RollbackSt
 
 	case blob.gen == anchored.Generation:
 		// Normal: blob matches the anchor.
-		if anchored.Bound && blob.hash != anchored.BlobHash {
+		if !anchored.Bound {
+			s.halt("state blob at generation %d has no initialized anchor", blob.gen)
+			return s, nil
+		}
+		if blob.hash != anchored.BlobHash {
 			s.halt("state blob at generation %d does not match anchored digest", blob.gen)
 			return s, nil
 		}
@@ -78,14 +82,6 @@ func Open(dev BlockDevice, offset int64, key []byte, anchor Anchor) (*RollbackSt
 			s.halt("invalid persisted state: %v", err)
 			return s, nil
 		}
-		if !anchored.Bound {
-			log.Printf("state: binding legacy anchor at generation %d", blob.gen)
-			if err := anchor.SetAnchor(anchorFor(blob)); err != nil {
-				s.halt("binding legacy anchor at generation %d failed: %v", blob.gen, err)
-				return s, nil
-			}
-		}
-
 	case anchored.Generation != ^uint32(0) && blob.gen == anchored.Generation+1:
 		// Benign off-by-one: crash after the blob write, before the
 		// anchor advanced. No cosignature for this generation escaped
@@ -113,13 +109,6 @@ func Open(dev BlockDevice, offset int64, key []byte, anchor Anchor) (*RollbackSt
 		return s, nil
 	}
 
-	if blob.legacy {
-		if err := s.upgradeLegacyBlob(blob.states); err != nil {
-			s.halt("upgrading legacy state blob failed: %v", err)
-			return s, nil
-		}
-	}
-
 	return s, nil
 }
 
@@ -129,32 +118,6 @@ func anchorFor(blob loadedBlob) AnchorState {
 		BlobHash:   blob.hash,
 		Bound:      true,
 	}
-}
-
-// upgradeLegacyBlob commits the admitted state as VITRUMW2 before serving.
-// This makes older signed firmware fail closed: it sees only the preceding
-// VITRUMW1 generation, behind the RPMB anchor.
-func (s *RollbackStore) upgradeLegacyBlob(states map[string][]byte) error {
-	if s.gen == ^uint32(0) {
-		return fmt.Errorf("generation counter exhausted")
-	}
-
-	next := s.gen + 1
-	log.Printf("state: upgrading legacy blob at generation %d to generation %d", s.gen, next)
-	hash, err := save(s.dev, s.off, s.key, next, states)
-	if err != nil {
-		return fmt.Errorf("persisting generation %d: %w", next, err)
-	}
-	if err := s.anchor.SetAnchor(AnchorState{
-		Generation: next,
-		BlobHash:   hash,
-		Bound:      true,
-	}); err != nil {
-		return fmt.Errorf("anchoring generation %d: %w", next, err)
-	}
-
-	s.gen = next
-	return nil
 }
 
 // admit validates every persisted note before restoring any state.
