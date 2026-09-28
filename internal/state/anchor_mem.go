@@ -8,10 +8,9 @@ import (
 // MemAnchor is an in-memory Anchor for tests and emulated (QEMU) runs, where
 // no eMMC RPMB exists.
 //
-// Like the hardware anchor its generation is monotonic, except for binding a
-// legacy record. Tests reuse it across store instances to model a reboot while
-// storage rollback is simulated separately. It provides no hardware rollback
-// protection.
+// Like the hardware anchor its generation is monotonic. Tests reuse it across
+// store instances to model a reboot while storage rollback is simulated
+// separately. It provides no hardware rollback protection.
 type MemAnchor struct {
 	mu    sync.Mutex
 	state AnchorState
@@ -32,8 +31,7 @@ func (a *MemAnchor) SetAnchor(next AnchorState) error {
 	if !next.Bound {
 		return fmt.Errorf("anchor state is not bound to a blob")
 	}
-	if next.Generation < a.state.Generation ||
-		(next.Generation == a.state.Generation && a.state.Bound) {
+	if next.Generation <= a.state.Generation {
 		return fmt.Errorf("anchor not monotonic: setting %d over %d", next.Generation, a.state.Generation)
 	}
 	a.state = next

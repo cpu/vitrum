@@ -2,8 +2,6 @@ package state
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"maps"
@@ -92,26 +90,18 @@ func TestSameGenerationUsesFreshNonce(t *testing.T) {
 	}
 }
 
-func TestLegacyBlobLoads(t *testing.T) {
+func TestVITRUMW1Rejected(t *testing.T) {
 	d := testDevice()
-	want := testStates(1)
+	copy(d.data[Offset+SlotSize:], "VITRUMW1")
 
-	if _, err := saveLegacy(d, Offset, testKey, 1, want); err != nil {
-		t.Fatal(err)
-	}
-
-	got, gen, err := Load(d, Offset, testKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gen != 1 || !maps.EqualFunc(got, want, bytes.Equal) {
-		t.Fatalf("Load legacy blob = %v gen %d, want %v gen 1", got, gen, want)
+	if _, _, err := Load(d, Offset, testKey); !errors.Is(err, ErrNoState) {
+		t.Fatalf("Load VITRUMW1 blob = %v, want ErrNoState", err)
 	}
 }
 
-func TestBlobHeaderSizePreserved(t *testing.T) {
-	if headerLen != legacyHeaderLen {
-		t.Fatalf("VITRUMW2 header is %d bytes, want legacy size %d", headerLen, legacyHeaderLen)
+func TestBlobHeaderSize(t *testing.T) {
+	if headerLen != 32 {
+		t.Fatalf("VITRUMW2 header is %d bytes, want 32", headerLen)
 	}
 }
 
@@ -245,36 +235,6 @@ func testStates(gen int) map[string][]byte {
 		"example.invalid/log-a": fmt.Appendf(nil, "note a generation %d\n", gen),
 		"example.invalid/log-b": fmt.Appendf(nil, "note b generation %d\n", gen),
 	}
-}
-
-func saveLegacy(d BlockDevice, offset int64, key []byte, gen uint32, states map[string][]byte) (BlobHash, error) {
-	aead, err := newAEAD(key, legacyNonceLen)
-	if err != nil {
-		return BlobHash{}, err
-	}
-	plaintext, err := encode(states)
-	if err != nil {
-		return BlobHash{}, err
-	}
-
-	nonce := deriveLegacyNonce(gen)
-	ciphertext := aead.Seal(nil, nonce, plaintext, genAAD(gen))
-	buf := make([]byte, SlotSize)
-	copy(buf, legacyMagic)
-	binary.LittleEndian.PutUint64(buf[magicLen:], uint64(gen))
-	binary.LittleEndian.PutUint32(buf[magicLen+legacyGenerationLen:], uint32(len(ciphertext)))
-	copy(buf[legacyNonceOffset:], nonce)
-	copy(buf[legacyHeaderLen:], ciphertext)
-
-	lba, err := slotLBA(d, offset, uint64(gen)%2)
-	if err != nil {
-		return BlobHash{}, err
-	}
-	if err := d.WriteBlocks(lba, buf); err != nil {
-		return BlobHash{}, err
-	}
-
-	return sha256.Sum256(buf[:legacyHeaderLen+len(ciphertext)]), nil
 }
 
 func testDevice() *memDevice {
