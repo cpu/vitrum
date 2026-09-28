@@ -167,6 +167,23 @@ func TestBenignOffByOne(t *testing.T) {
 	}
 }
 
+func TestFreshAnchorRejectsGenerationZeroBlob(t *testing.T) {
+	dev := testDevice()
+	if err := Save(dev, Offset, testKey, 0, map[string][]byte{
+		testOrigin: testSignedNote(t, 7),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(dev, Offset, testKey, NewMemAnchor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Halted() {
+		t.Fatal("store accepted a blob beside a fresh anchor")
+	}
+}
+
 // TestAnchorAheadNoBlob covers erased/corrupt storage while the anchor records
 // a committed generation: tamper, halt.
 func TestAnchorAheadNoBlob(t *testing.T) {
@@ -348,131 +365,6 @@ func TestInterruptedGenerationCannotReplaceCommittedState(t *testing.T) {
 	}
 	if !s.Halted() {
 		t.Fatal("store accepted a different authentic blob at the anchored generation")
-	}
-}
-
-func TestLegacyStateMigrates(t *testing.T) {
-	dev := testDevice()
-	want := testSignedNote(t, 7)
-	_, err := saveLegacy(dev, Offset, testKey, 1, map[string][]byte{testOrigin: want})
-	if err != nil {
-		t.Fatal(err)
-	}
-	anchor := NewMemAnchor()
-	anchor.state.Generation = 1
-
-	s, err := Open(dev, Offset, testKey, anchor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.Halted() {
-		t.Fatal("store halted while migrating legacy state")
-	}
-	got, ok := s.Get(testOrigin)
-	if !ok || !bytes.Equal(got.Note, want) {
-		t.Fatalf("migrated state = %+v ok=%v, want original note", got, ok)
-	}
-	if s.Generation() != 2 {
-		t.Fatalf("migrated generation = %d, want 2", s.Generation())
-	}
-	anchored, err := anchor.Anchor()
-	if err != nil {
-		t.Fatal(err)
-	}
-	blob, err := load(dev, Offset, testKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if anchored.Generation != 2 || !anchored.Bound || anchored.BlobHash != blob.hash || blob.legacy {
-		t.Fatalf("migrated anchor = %+v, blob = %+v, want generation 2 VITRUMW2 state", anchored, blob)
-	}
-	// An old reader ignores VITRUMW2 and can only recover this preceding
-	// VITRUMW1 blob, whose generation is now behind the anchor.
-	previous, err := loadSlot(dev, Offset, 1, testKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if previous.gen != 1 || !previous.legacy {
-		t.Fatalf("previous blob = %+v, want generation 1 VITRUMW1 state", previous)
-	}
-}
-
-func TestLegacyInterruptedStateMigrates(t *testing.T) {
-	dev := testDevice()
-	_, err := saveLegacy(dev, Offset, testKey, 1, map[string][]byte{
-		testOrigin: testSignedNote(t, 7),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	anchor := NewMemAnchor()
-
-	s, err := Open(dev, Offset, testKey, anchor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.Halted() || s.Generation() != 2 {
-		t.Fatalf("interrupted migration halted=%v generation=%d, want false, 2", s.Halted(), s.Generation())
-	}
-	anchored, err := anchor.Anchor()
-	if err != nil {
-		t.Fatal(err)
-	}
-	blob, err := load(dev, Offset, testKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if anchored.Generation != 2 || !anchored.Bound || anchored.BlobHash != blob.hash || blob.legacy {
-		t.Fatalf("migrated anchor = %+v, blob = %+v, want generation 2 VITRUMW2 state", anchored, blob)
-	}
-}
-
-func TestLegacyMigrationFailureHalts(t *testing.T) {
-	dev := testDevice()
-	if _, err := saveLegacy(dev, Offset, testKey, 1, map[string][]byte{
-		testOrigin: testSignedNote(t, 7),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	mem := NewMemAnchor()
-	mem.state.Generation = 1
-	anchor := &failAnchor{MemAnchor: mem, failAfter: 0}
-
-	s, err := Open(dev, Offset, testKey, anchor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !s.Halted() {
-		t.Fatal("store served without binding the legacy anchor")
-	}
-}
-
-func TestLegacyFormatUpgradeFailureHaltsAndRecovers(t *testing.T) {
-	dev := testDevice()
-	if _, err := saveLegacy(dev, Offset, testKey, 1, map[string][]byte{
-		testOrigin: testSignedNote(t, 7),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	mem := NewMemAnchor()
-	mem.state.Generation = 1
-	anchor := &failAnchor{MemAnchor: mem, failAfter: 1}
-
-	s, err := Open(dev, Offset, testKey, anchor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !s.Halted() {
-		t.Fatal("store served after the VITRUMW2 anchor write failed")
-	}
-
-	anchor.failAfter = 99
-	s, err = Open(dev, Offset, testKey, anchor)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.Halted() || s.Generation() != 2 {
-		t.Fatalf("upgrade recovery halted=%v generation=%d, want false, 2", s.Halted(), s.Generation())
 	}
 }
 

@@ -35,23 +35,16 @@ const (
 	// (AES-256).
 	StateKeyLen = 32
 
-	magicLen            = 8
-	generationLen       = 4
-	legacyGenerationLen = 8
-	lengthLen           = 4
-	legacyNonceLen      = 12
-	nonceLen            = 16
-	tagLen              = 16 // AES-GCM tag
-	nonceOffset         = magicLen + generationLen + lengthLen
-	legacyNonceOffset   = magicLen + legacyGenerationLen + lengthLen
-	headerLen           = nonceOffset + nonceLen
-	legacyHeaderLen     = legacyNonceOffset + legacyNonceLen
+	magicLen      = 8
+	generationLen = 4
+	lengthLen     = 4
+	nonceLen      = 16
+	tagLen        = 16 // AES-GCM tag
+	nonceOffset   = magicLen + generationLen + lengthLen
+	headerLen     = nonceOffset + nonceLen
 )
 
-var (
-	legacyMagic = []byte("VITRUMW1")
-	magic       = []byte("VITRUMW2")
-)
+var magic = []byte("VITRUMW2")
 
 // BlobHash identifies an encoded state blob.
 type BlobHash [sha256.Size]byte
@@ -143,7 +136,6 @@ type loadedBlob struct {
 	states map[string][]byte
 	gen    uint32
 	hash   BlobHash
-	legacy bool
 }
 
 func load(d BlockDevice, offset int64, key []byte) (loadedBlob, error) {
@@ -183,42 +175,21 @@ func loadSlot(d BlockDevice, offset int64, slot uint64, key []byte) (loadedBlob,
 		return loadedBlob{}, err
 	}
 
-	var gen uint32
-	var length uint32
-	var nonce []byte
-	var hLen int
-	var legacy bool
-	switch {
-	case bytes.Equal(buf[:magicLen], magic):
-		gen = binary.LittleEndian.Uint32(buf[magicLen:])
-		length = binary.LittleEndian.Uint32(buf[magicLen+generationLen:])
-		nonce = buf[nonceOffset:headerLen]
-		hLen = headerLen
-	case bytes.Equal(buf[:magicLen], legacyMagic):
-		legacy = true
-		gen64 := binary.LittleEndian.Uint64(buf[magicLen:])
-		if gen64 > math.MaxUint32 {
-			return loadedBlob{}, errors.New("generation out of range")
-		}
-		gen = uint32(gen64)
-		length = binary.LittleEndian.Uint32(buf[magicLen+legacyGenerationLen:])
-		nonce = buf[legacyNonceOffset:legacyHeaderLen]
-		hLen = legacyHeaderLen
-	default:
+	if !bytes.Equal(buf[:magicLen], magic) {
 		return loadedBlob{}, errors.New("bad magic")
 	}
 
-	if int(length) < tagLen || int(length) > SlotSize-hLen {
+	gen := binary.LittleEndian.Uint32(buf[magicLen:])
+	length := binary.LittleEndian.Uint32(buf[magicLen+generationLen:])
+	nonce := buf[nonceOffset:headerLen]
+
+	if int(length) < tagLen || int(length) > SlotSize-headerLen {
 		return loadedBlob{}, errors.New("bad ciphertext length")
 	}
 
-	ciphertext := buf[hLen : hLen+int(length)]
+	ciphertext := buf[headerLen : headerLen+int(length)]
 
-	if legacy && !bytes.Equal(nonce, deriveLegacyNonce(gen)) {
-		return loadedBlob{}, errors.New("nonce/generation mismatch")
-	}
-
-	aead, err := newAEAD(key, len(nonce))
+	aead, err := newAEAD(key, nonceLen)
 	if err != nil {
 		return loadedBlob{}, err
 	}
@@ -236,8 +207,7 @@ func loadSlot(d BlockDevice, offset int64, slot uint64, key []byte) (loadedBlob,
 	return loadedBlob{
 		states: states,
 		gen:    gen,
-		hash:   sha256.Sum256(buf[:hLen+int(length)]),
-		legacy: legacy,
+		hash:   sha256.Sum256(buf[:headerLen+int(length)]),
 	}, nil
 }
 
@@ -258,13 +228,6 @@ func genAAD(gen uint32) []byte {
 	aad := make([]byte, 4)
 	binary.LittleEndian.PutUint32(aad, gen)
 	return aad
-}
-
-func deriveLegacyNonce(gen uint32) []byte {
-	nonce := make([]byte, legacyNonceLen)
-	copy(nonce, legacyMagic[:4])
-	binary.LittleEndian.PutUint32(nonce[4:], gen)
-	return nonce
 }
 
 func slotLBA(d BlockDevice, offset int64, slot uint64) (int64, error) {

@@ -33,6 +33,9 @@ func TestRPMBAnchorRoundTrip(t *testing.T) {
 func TestRPMBAnchorMonotonic(t *testing.T) {
 	a := newTestRPMBAnchor(t)
 
+	if err := a.SetAnchor(testAnchorState(0)); err == nil {
+		t.Fatal("SetAnchor(0) over a fresh anchor succeeded")
+	}
 	if err := a.SetAnchor(testAnchorState(2)); err != nil {
 		t.Fatal(err)
 	}
@@ -129,50 +132,40 @@ func TestBenignOffByOneOverRPMBAnchor(t *testing.T) {
 	}
 }
 
-func TestLegacyStateMigrationOverRPMBAnchor(t *testing.T) {
-	signed := testSignedNote(t, 7)
-	dev := testDevice()
-	_, err := saveLegacy(dev, Offset, testKey, 1, map[string][]byte{testOrigin: signed})
-	if err != nil {
+func TestRPMBAnchorRejectsGenerationOnlyRecord(t *testing.T) {
+	p := newTestRPMB(t)
+	record := make([]byte, anchorGenerationLen)
+	binary.BigEndian.PutUint32(record, 1)
+	if err := p.Write(rpmbAnchorSector, record); err != nil {
 		t.Fatal(err)
 	}
 
-	p := newTestRPMB(t)
-	legacy := make([]byte, anchorGenerationLen)
-	binary.BigEndian.PutUint32(legacy, 1)
-	if err := p.Write(rpmbAnchorSector, legacy); err != nil {
-		t.Fatal(err)
+	if _, err := NewRPMBAnchor(p).Anchor(); err == nil {
+		t.Fatal("generation-only RPMB record accepted")
 	}
+}
+
+func TestRPMBCommitConsumesOneWrite(t *testing.T) {
+	p := newTestRPMB(t)
 	before, err := p.Counter(true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	anchor := NewRPMBAnchor(p)
 
-	s, err := Open(dev, Offset, testKey, anchor)
+	s, err := Open(testDevice(), Offset, testKey, anchor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Halted() {
-		t.Fatal("store halted while migrating legacy RPMB state")
-	}
-	got, err := anchor.Anchor()
-	if err != nil {
+	if err := s.Put(testOrigin, witness.LogState{Size: 7, Note: testSignedNote(t, 7)}); err != nil {
 		t.Fatal(err)
-	}
-	blob, err := load(dev, Offset, testKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Generation != 2 || !got.Bound || got.BlobHash != blob.hash || blob.legacy {
-		t.Fatalf("migrated anchor = %+v, blob = %+v, want generation 2 VITRUMW2 state", got, blob)
 	}
 	after, err := p.Counter(true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after != before+2 {
-		t.Fatalf("migration consumed %d RPMB writes, want 2", after-before)
+	if after != before+1 {
+		t.Fatalf("commit consumed %d RPMB writes, want 1", after-before)
 	}
 }
 
