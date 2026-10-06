@@ -272,6 +272,11 @@ unprogrammed.
 Require a clean tree, record its revision, and reproduce each unsigned image
 before signing it:
 
+The pinned TamaGo development revision includes the
+[CAAM initialization fix](https://github.com/usbarmory/tamago/commit/5942894db697ee3d3376d5e3ca0273121493d220)
+for the Go 1.27 boot regression. Use the module pin and its matching compiler;
+do not resolve the moving development branch again during signing.
+
 ```bash
 test -z "$(git status --porcelain)"
 SOURCE_REVISION=$(git rev-parse HEAD)
@@ -752,11 +757,12 @@ signature, reflash the microSD on the host, and boot the signed provisioner
 again. In particular, `status=warning` is a refusal: investigate the raw HAB
 event and produce a clean signed image; do not weaken the gate.
 
-The TamaGo v1.26.6 uSDHC driver cannot issue an RPMB reliable write without
-the local reliable-write correction. Its uncorrected pre-write failure is
-`transfer size cannot exceed 65535 blocks`. If that exact error occurs with
-`key_programmed=false`, preserve the powered state, build and sign a new
-committed revision containing the correction, archive both new signed images,
+TamaGo releases up to v1.26.6 cannot issue an RPMB reliable write; the fix
+is upstream in usbarmory/tamago#98 and vitrum pins a post-fix revision. The
+unfixed pre-write failure is `transfer size cannot exceed 65535 blocks`. If
+that exact error occurs with `key_programmed=false`, the image was built
+against a pre-fix TamaGo: preserve the powered state, build and sign a new
+committed revision pinning the fixed TamaGo, archive both new signed images,
 then power off only to reflash the corrected provisioner. Do not retry the
 unchanged image.
 
