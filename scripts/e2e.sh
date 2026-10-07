@@ -27,10 +27,21 @@ QEMU_PGID=""
 cd "$(dirname "$0")/.."
 
 cleanup() {
+    status=$?
     [ -n "$QEMU_PGID" ] && kill -- "-$QEMU_PGID" 2>/dev/null || true
+    if [ "$status" -ne 0 ]; then
+        echo "== build/QEMU log:" >&2
+        tail -100 "$QEMU_LOG" >&2
+    fi
     rm -rf "$TMP"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+curl() {
+    command curl --connect-timeout 2 --max-time 5 "$@"
+}
 
 echo "== work dir $TMP (log: $QEMU_LOG)"
 [ -f keys/witness.seed ] || go run ./cmd/vitrum keygen
@@ -42,17 +53,25 @@ echo "== booting under QEMU"
 setsid make qemu TARGET=mx6ullevk >>"$QEMU_LOG" 2>&1 &
 QEMU_PGID=$!
 
-for _ in $(seq 1 60); do
-    if curl -fsS "$WITNESS/healthz" >/dev/null 2>&1; then
+ready=false
+deadline=$((SECONDS + 60))
+while [ "$SECONDS" -lt "$deadline" ]; do
+    # Early hostfwd traffic can leave emulated ENET unresponsive during startup.
+    if grep -q 'vitrum witness listening' "$QEMU_LOG" &&
+        curl -fsS "$WITNESS/healthz" >/dev/null 2>&1; then
+        ready=true
         break
     fi
     if ! kill -0 "$QEMU_PGID" 2>/dev/null; then
         echo "QEMU exited early:" >&2
-        tail -20 "$QEMU_LOG" >&2
         exit 1
     fi
     sleep 0.5
 done
+if [ "$ready" != true ]; then
+    echo "ERROR: witness did not become ready within 60 seconds" >&2
+    exit 1
+fi
 
 echo "== witness up:"
 curl -fsS "$WITNESS/healthz"
