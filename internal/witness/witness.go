@@ -495,6 +495,10 @@ func (w *Witness) sequence() {
 
 	w.poolMu.Lock()
 	w.inSequencing = nil
+	// Retire the batch before callers can submit their next checkpoint.
+	for _, entry := range p.entries {
+		close(entry.done)
+	}
 	w.poolMu.Unlock()
 }
 
@@ -510,12 +514,12 @@ func (w *Witness) sequencePool(p *pool) {
 	epoch := w.epoch.Load()
 	if signer == nil {
 		w.batchesFailed.Add(1)
-		w.finishPool(p, http.StatusServiceUnavailable, []byte("witness key not provisioned\n"))
+		w.setPoolResult(p, http.StatusServiceUnavailable, []byte("witness key not provisioned\n"))
 		return
 	}
 	if w.Halted() {
 		w.batchesFailed.Add(1)
-		w.finishPool(p, http.StatusServiceUnavailable, []byte("witness halted: storage rollback or tamper detected\n"))
+		w.setPoolResult(p, http.StatusServiceUnavailable, []byte("witness halted: storage rollback or tamper detected\n"))
 		return
 	}
 
@@ -542,14 +546,14 @@ func (w *Witness) sequencePool(p *pool) {
 	}
 	if signFailed {
 		w.batchesFailed.Add(1)
-		w.finishPool(p, http.StatusInternalServerError, nil)
+		w.setPoolResult(p, http.StatusInternalServerError, nil)
 		return
 	}
 
 	if len(states) != 0 {
 		if err := w.store.PutBatch(states); err != nil {
 			w.batchesFailed.Add(1)
-			w.finishPool(p, http.StatusInternalServerError, nil)
+			w.setPoolResult(p, http.StatusInternalServerError, nil)
 			return
 		}
 		w.batchesCommitted.Add(1)
@@ -557,22 +561,21 @@ func (w *Witness) sequencePool(p *pool) {
 	} else {
 		w.batchesFailed.Add(1)
 	}
-	for _, entry := range p.entries {
-		close(entry.done)
-	}
 }
 
-func (w *Witness) finishPool(p *pool, code int, resp []byte) {
+func (w *Witness) setPoolResult(p *pool, code int, resp []byte) {
 	for _, entry := range p.entries {
 		entry.result = result{code: code, resp: resp}
-		close(entry.done)
 	}
 }
 
 func (w *Witness) stopPools() {
 	w.poolMu.Lock()
 	defer w.poolMu.Unlock()
-	w.finishPool(w.currentPool, http.StatusServiceUnavailable, []byte("witness sequencer stopped\n"))
+	w.setPoolResult(w.currentPool, http.StatusServiceUnavailable, []byte("witness sequencer stopped\n"))
+	for _, entry := range w.currentPool.entries {
+		close(entry.done)
+	}
 	w.currentPool = newPool()
 }
 

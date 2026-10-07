@@ -559,6 +559,55 @@ func TestPoolWithholdsResponsesAndDeduplicatesWhilePersisting(t *testing.T) {
 	}
 }
 
+// TestPoolRetiresBeforeResponding verifies that callers cannot observe a completed
+// batch as still pending when submitting their next checkpoint.
+func TestPoolRetiresBeforeResponding(t *testing.T) {
+	store := &blockingStore{
+		MemStore: NewMemStore(),
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	w, _ := newTestWitnessWithStore(t, store)
+	l := newTestLog(t, testOrigin)
+	l.Append("a")
+	body := EncodeAddCheckpoint(0, nil, mustCheckpoint(t, l))
+	response := make(chan result, 1)
+	go func() {
+		code, resp := w.AddCheckpoint(body)
+		response <- result{code, resp}
+	}()
+	waitForPoolSize(t, w, 1)
+	sequenceDone := make(chan struct{})
+	go func() {
+		w.sequence()
+		close(sequenceDone)
+	}()
+	<-store.entered
+
+	// Hold retirement until signing and persistence have finished.
+	w.poolMu.Lock()
+	entry := w.inSequencing[testOrigin]
+	close(store.release)
+	w.mu.Lock()
+	select {
+	case <-entry.done:
+		t.Error("response released before batch retirement")
+	default:
+	}
+	w.mu.Unlock()
+	w.poolMu.Unlock()
+	<-sequenceDone
+	if resp := <-response; resp.code != http.StatusOK {
+		t.Fatalf("first checkpoint = %d (%q), want 200", resp.code, resp.resp)
+	}
+
+	l.Append("b")
+	badProof := EncodeAddCheckpoint(1, nil, mustCheckpoint(t, l))
+	if code, resp := w.AddCheckpoint(badProof); code != http.StatusUnprocessableEntity {
+		t.Fatalf("next checkpoint = %d (%q), want 422", code, resp)
+	}
+}
+
 func TestPoolFailureRejectsWholeBatch(t *testing.T) {
 	w, _ := newTestWitnessWithStore(t, failStore{})
 	responses := make(chan result, 2)
