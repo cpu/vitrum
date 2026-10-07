@@ -95,7 +95,8 @@ $(ELF): check_tamago $(HOSTSEED)
 $(ELF).bin: CROSS_COMPILE=arm-none-eabi-
 $(ELF).bin: $(ELF)
 	$(CROSS_COMPILE)objcopy -j .text -j .rodata -j .shstrtab -j .typelink \
-	    -j .itablink -j .gopclntab -j .go.buildinfo -j .go.module -j .noptrdata -j .data \
+	    -j .itablink -j .gopclntab -j .go.type -j .go.func \
+	    -j .go.buildinfo -j .go.fipsinfo -j .go.module -j .noptrdata -j .data \
 	    -j .bss --set-section-flags .bss=alloc,load,contents \
 	    -j .noptrbss --set-section-flags .noptrbss=alloc,load,contents \
 	    $(ELF) -O binary $(ELF).bin
