@@ -6,7 +6,7 @@ require (
 	filippo.io/torchwood v0.9.0
 	github.com/usbarmory/go-net v0.0.0-20260714134120-c2c964e7084c
 	github.com/usbarmory/rpmb v0.0.0-20260903082741-fa6a72563433
-	github.com/usbarmory/tamago v1.27.2-0.20261006103031-94667f094bd0
+	github.com/usbarmory/tamago v1.27.2
 	golang.org/x/crypto v0.56.0
 	golang.org/x/mod v0.42.0
 )
