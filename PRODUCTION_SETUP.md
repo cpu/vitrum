@@ -272,10 +272,9 @@ unprogrammed.
 Require a clean tree, record its revision, and reproduce each unsigned image
 before signing it:
 
-The pinned TamaGo development revision includes the
-[CAAM initialization fix](https://github.com/usbarmory/tamago/commit/5942894db697ee3d3376d5e3ca0273121493d220)
-for the Go 1.27 boot regression. Use the module pin and its matching compiler;
-do not resolve the moving development branch again during signing.
+The project pins Go 1.27.3 and TamaGo v1.27.3 in `go.mod`. Use the module pin
+and its matching compiler; do not resolve a moving development branch during
+signing.
 
 ```bash
 test -z "$(git status --porcelain)"
@@ -286,7 +285,7 @@ make repro APP=vitrum-rpmb-provision FWPKG=./fw/rpmb-provision \
 ```
 
 The signed targets run the pinned `tamago install habtool@...` command on every
-invocation. Go 1.26 performs a module deprecation lookup even when the module
+invocation. Go performs a module deprecation lookup even when the module
 is already cached, so `GOPROXY=off` rejects this command. Point the Go command
 at the warm local download cache with no fallback and disable remote checksum
 lookups. Stop if either offline build fails:
